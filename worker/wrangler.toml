@@ -1,0 +1,7 @@
+name = "greenroom-worker"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+
+# Required secrets (set via `npx wrangler secret put <NAME>`):
+#   ANTHROPIC_API_KEY   — Anthropic API key for Claude
+#   ASSEMBLYAI_API_KEY  — AssemblyAI API key for transcription tokens
