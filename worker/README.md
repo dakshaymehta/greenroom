@@ -13,6 +13,7 @@ app binary.
 | ------------------------ | ----------------------------------- | ---------------------------------------------------- |
 | `POST /chat`             | `api.anthropic.com/v1/messages`     | Proxy Claude chat requests (SSE streaming supported) |
 | `POST /transcribe-token` | `streaming.assemblyai.com/v3/token` | Fetch a 480-second AssemblyAI WebSocket token        |
+| `POST /exa-search`       | `api.exa.ai/search`                 | Neural web search for Gary's live fact-checking      |
 
 ## Required secrets
 
@@ -21,6 +22,7 @@ Set these before deploying:
 ```bash
 npx wrangler secret put ANTHROPIC_API_KEY
 npx wrangler secret put ASSEMBLYAI_API_KEY
+npx wrangler secret put EXA_API_KEY
 ```
 
 ## Deployment

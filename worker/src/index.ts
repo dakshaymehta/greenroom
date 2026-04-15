@@ -8,6 +8,7 @@
  * Routes:
  *   POST /chat              → Anthropic Messages API (Claude)
  *   POST /transcribe-token  → AssemblyAI temp WebSocket token (480s)
+ *   POST /exa-search        → Exa neural web search (for fact-checking)
  *   OPTIONS *               → CORS preflight
  */
 
@@ -21,6 +22,8 @@ interface Env {
   ANTHROPIC_API_KEY: string;
   /** AssemblyAI API key for fetching short-lived transcription tokens. */
   ASSEMBLYAI_API_KEY: string;
+  /** Exa API key for web search used by Gary's fact-checking. */
+  EXA_API_KEY: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -149,6 +152,71 @@ async function handleTranscribeToken(
 }
 
 // ---------------------------------------------------------------------------
+// Route: POST /exa-search
+// ---------------------------------------------------------------------------
+
+/**
+ * Proxies a search query to the Exa neural search API.
+ *
+ * Gary (the fact-checker persona) uses this to verify claims with live web
+ * data instead of relying solely on Claude's training knowledge. The app
+ * sends a query string and receives back title/text/url snippets.
+ */
+async function handleExaSearch(request: Request, env: Env): Promise<Response> {
+  try {
+    const { query, numResults = 3 } = (await request.json()) as {
+      query: string;
+      numResults?: number;
+    };
+
+    if (!query) {
+      return new Response(
+        JSON.stringify({ error: "Missing 'query' field in request body" }),
+        { status: 400, headers: { "Content-Type": "application/json" } },
+      );
+    }
+
+    const upstreamResponse = await fetch("https://api.exa.ai/search", {
+      method: "POST",
+      headers: {
+        "x-api-key": env.EXA_API_KEY,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        query,
+        numResults,
+        type: "neural",
+        useAutoprompt: true,
+        contents: { text: { maxCharacters: 500 } },
+      }),
+    });
+
+    if (!upstreamResponse.ok) {
+      const errorBody = await upstreamResponse.text();
+      console.error(
+        `[/exa-search] Exa error ${upstreamResponse.status}: ${errorBody}`,
+      );
+      return new Response(errorBody, {
+        status: upstreamResponse.status,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    const resultsJSON = await upstreamResponse.text();
+    return new Response(resultsJSON, {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  } catch (error) {
+    console.error("[/exa-search] Unhandled error:", error);
+    return new Response(JSON.stringify({ error: String(error) }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main fetch handler
 // ---------------------------------------------------------------------------
 
@@ -170,6 +238,9 @@ export default {
 
       case "/transcribe-token":
         return withCORS(await handleTranscribeToken(request, env));
+
+      case "/exa-search":
+        return withCORS(await handleExaSearch(request, env));
 
       default:
         return withCORS(
