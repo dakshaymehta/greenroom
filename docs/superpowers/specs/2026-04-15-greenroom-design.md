@@ -5,6 +5,7 @@
 **Author**: Dakshay Mehta
 **Date**: 2026-04-15
 **Status**: Approved
+**Deployment Target**: macOS 14.2+ (Sonoma) — required for ScreenCaptureKit audio-only capture
 
 ---
 
@@ -85,7 +86,7 @@ Hybrid native macOS app: Swift handles audio capture, transcription, AI orchestr
 
 - `/chat` — Claude API proxy (no keys in the app)
 - `/transcribe-token` — AssemblyAI temp token endpoint
-- Forked from Lore's existing Worker
+- Forked from Lore's existing Worker (Lore is the author's macOS AI companion app — the Worker structure and AssemblyAI patterns are proven in production there)
 
 ---
 
@@ -108,11 +109,16 @@ Hybrid native macOS app: Swift handles audio capture, transcription, AI orchestr
 
 ### Mixing
 
-Both streams are:
+Both streams are mixed into a single PCM16 mono 16kHz stream (AssemblyAI's expected format):
 
-1. Converted to PCM16 mono 16kHz (AssemblyAI's expected format)
-2. Mixed into a single audio stream
-3. The mix is the "full show audio" — everything the audience would hear plus the host
+1. `SCStream` delivers `CMSampleBuffer` on its own callback queue; `AVAudioEngine` delivers `AVAudioPCMBuffer` on its tap queue. The `AudioMixer` receives both asynchronously and interleaves samples into a single output buffer on a dedicated serial queue.
+2. **Automatic gain control (AGC)**: The host's mic is typically much louder than system audio (co-hosts come through speakers/headphones at lower gain). The mixer applies a simple AGC step — normalizing both streams to similar RMS levels before mixing — so the transcript isn't dominated by the host's voice.
+3. **Single-source fallback**: If only one permission is granted (e.g., mic but not Screen Recording, or vice versa), the app runs with that single source. Both are preferred but neither is strictly required on its own.
+4. The mixed output is the "full show audio" — everything the audience would hear plus the host.
+
+### SFX Audio Isolation
+
+Fred's sound effects play through `AVAudioPlayer`, which outputs to the system audio device. If ScreenCaptureKit captures system audio, the SFX would loop back into the transcription pipeline (SFX gets transcribed → triggers more SFX). To prevent this, the `SystemAudioCaptureEngine` uses `SCStreamConfiguration.excludesCurrentProcessAudio = true` to exclude Greenroom's own audio output from the capture. This is a ScreenCaptureKit API available since macOS 14.2.
 
 ### Transcription
 
@@ -124,7 +130,7 @@ AssemblyAI streaming (same proven pattern as Lore):
 4. Receive partial transcripts (in-progress) and final transcripts (speaker-turn complete)
 5. Final transcripts accumulate in a rolling buffer
 
-The transcript buffer maintains a sliding window of the last ~5 minutes of conversation for context, with the latest ~15-second chunk marked as "new" for each AI processing cycle.
+The transcript buffer stores the last **5 minutes** of finalized text (the storage window). When the AI engine requests a chunk, it extracts two pieces: the **new text** (~15 seconds since last tick) and the **context window** (configurable, default 2 minutes of preceding text for lookback). The storage window is larger than the context window so that the buffer doesn't lose text if the user increases the context setting mid-session.
 
 ---
 
@@ -141,6 +147,8 @@ Instead of 4 separate Claude calls per interval (expensive, ~4x cost), a single 
 5. Personas with nothing to say return `null` — no forced commentary
 
 **Model**: Claude Sonnet 4.6 (default — fast + smart enough for real-time). Opus 4.6 as optional upgrade for higher quality.
+
+**Non-streaming**: Since the response is a single structured JSON blob (not a chat message), the Claude call uses standard request/response (non-streaming). This simplifies JSON parsing — no need to assemble partial SSE chunks. The full response arrives in ~2-5 seconds (Sonnet) or ~5-10 seconds (Opus), which is acceptable for a 15-second tick interval.
 
 ### Structured Output Schema
 
@@ -161,13 +169,22 @@ Instead of 4 separate Claude calls per interval (expensive, ~4x cost), a single 
 }
 ```
 
-Fields:
+### Field Definitions
 
-- `gary.text` — fact-check or background info. `gary.confidence` — how confident the correction is (could display as a visual indicator).
-- `fred.effect` — sound effect name to play (from bundled library). `fred.context` — background context text.
-- `jackie.text` — joke or one-liner.
-- `troll.text` — cynical commentary.
-- Any persona can be `null` (nothing to say this cycle).
+The top-level object always contains exactly 4 keys (`gary`, `fred`, `jackie`, `troll`). Each value is either an object or `null`. A key must not be omitted — use `null` for silence.
+
+| Persona  | Field        | Type          | Required          | Description                            |
+| -------- | ------------ | ------------- | ----------------- | -------------------------------------- |
+| `gary`   | `text`       | string        | yes (if non-null) | Fact-check or background info          |
+| `gary`   | `confidence` | number (0-1)  | no, default 0.8   | How confident the correction is        |
+| `fred`   | `effect`     | string (enum) | no                | Sound effect name from bundled library |
+| `fred`   | `context`    | string        | no                | Background context text                |
+| `jackie` | `text`       | string        | yes (if non-null) | Joke or one-liner                      |
+| `troll`  | `text`       | string        | yes (if non-null) | Cynical commentary                     |
+
+**Fred can respond with `effect` only, `context` only, or both.** At least one must be present if Fred is non-null.
+
+**Valid `effect` values** (enum, enforced in Swift parsing): `rimshot`, `ba-dum-tss`, `wrong-buzzer`, `sad-trombone`, `crickets`, `dun-dun-dun`, `airhorn`, `dramatic-sting`, `ding`, `applause`, `laugh-track`, `chef-kiss`. Unknown values are logged and ignored (no crash, no sound).
 
 ### Persona System Prompts
 
@@ -199,16 +216,35 @@ Each AI call includes:
 
 This gives the personas memory within a session — Gary can say "as I mentioned earlier..." and the Troll can callback to previous moments.
 
+### Tick Timer Behavior
+
+The AI engine runs on a **response-gated timer**, not a strict interval:
+
+1. Timer fires every N seconds (default 15).
+2. If a Claude call is already in-flight, the tick is **skipped** — no queuing, no back-to-back calls.
+3. Transcript that accumulated during the skipped tick is included in the next chunk (the buffer handles this naturally).
+4. If Claude responds faster than the interval, the remaining time is idle (no early fire).
+
+This prevents runaway API costs if Claude is slow (Opus, network issues) and keeps the UX predictable — the host never sees two batches of responses arrive in rapid succession.
+
 ### Cost Estimate
 
-At 1 call every 15 seconds with ~800 input tokens + ~200 output tokens:
+Per-call token estimate (realistic, accounting for conversation history):
+
+- System prompt (4 persona definitions + output format): ~400 tokens
+- Conversation history (last 3 response cycles × ~200 tokens each): ~600 tokens
+- Transcript chunk (new text + context window): ~500-1000 tokens
+- **Total input: ~1500-2000 tokens per call**
+- **Output: ~100-300 tokens** (most personas are null or short)
+
+At 1 call every 15 seconds:
 
 - 4 calls/min = 240 calls/hour
-- ~240K tokens/hour
-- Sonnet 4.6: roughly **$1-2/hour** of live show
-- Opus 4.6: roughly **$8-12/hour** of live show
+- ~480K input tokens/hour, ~48K output tokens/hour
+- Sonnet 4.6: roughly **$2-4/hour** of live show
+- Opus 4.6: roughly **$15-25/hour** of live show
 
-Acceptable for a production tool. Configurable interval (10-30s) lets users trade off responsiveness vs. cost.
+Acceptable for a production tool. Configurable interval (5-60s) lets users trade off responsiveness vs. cost.
 
 ---
 
@@ -346,7 +382,9 @@ The app is a standard macOS window (not menu bar-only like Lore). This gives it:
 
 The window hosts a single WKWebView that fills the entire content area. All chrome is in the WebView itself (the header, footer, persona lanes).
 
-Settings surface (model selection, interval timing, persona toggles, sound volume) as a separate panel or sheet — not cluttering the main sidebar.
+### Settings Panel
+
+Settings (model selection, interval timing, persona toggles, sound volume) are presented in a **separate non-modal NSPanel** — not a sheet. This allows the host to adjust settings (e.g., mute Fred, change interval) while the show is running without blocking the sidebar. The settings panel floats alongside the main window and can be dismissed independently.
 
 ---
 
@@ -392,8 +430,8 @@ Settings surface (model selection, interval timing, persona toggles, sound volum
 greenroom/
 ├── README.md                          # Hero screenshot, pitch, quick start
 ├── LICENSE                            # MIT
-├── CLAUDE.md → AGENTS.md              # Symlink (same as Lore convention)
-├── AGENTS.md                          # Agent instructions
+├── CLAUDE.md → AGENTS.md              # Symlink so both Claude Code (reads CLAUDE.md) and other AI agents (read AGENTS.md) get the same instructions
+├── AGENTS.md                          # Single source of truth for all AI coding agents
 ├── .gitignore
 │
 ├── docs/
@@ -424,7 +462,7 @@ greenroom/
 │   │   │   ├── GreenroomEngine.swift          # Core AI orchestration loop
 │   │   │   ├── PersonaPrompts.swift           # System prompts for all personas
 │   │   │   ├── PersonaResponse.swift          # Response model (Codable)
-│   │   │   └── ClaudeAPIClient.swift          # Claude via Worker (SSE streaming)
+│   │   │   └── ClaudeAPIClient.swift          # Claude via Worker (non-streaming JSON)
 │   │   │
 │   │   ├── SoundEffects/
 │   │   │   ├── SoundEffectEngine.swift        # Playback + mute + volume
@@ -526,6 +564,68 @@ greenroom/
 | Network          | API calls to Cloudflare Worker            | Standard (no special permission) |
 
 The app should guide users through permission setup on first launch with clear explanations of why each permission is needed.
+
+---
+
+## Error Handling & Resilience
+
+A live production tool must handle failures gracefully — the host can't debug mid-show.
+
+### AssemblyAI Websocket Drops
+
+- Auto-reconnect with exponential backoff (1s, 2s, 4s, max 30s).
+- During reconnection, audio continues to buffer locally. When the websocket re-establishes, the buffered audio is flushed (AssemblyAI handles out-of-order audio gracefully).
+- Sidebar shows a subtle "reconnecting..." indicator in the status bar (not per-persona — this is infrastructure).
+- If reconnection fails after 60 seconds, show a persistent error state with a manual "Retry" button.
+
+### Claude API Failures
+
+- If a Claude call fails (network error, 429 rate limit, 529 overloaded), the tick is skipped and retried on the next interval. No immediate retry — the next tick handles it naturally.
+- The sidebar shows a subtle "AI paused" indicator (persona lanes dim slightly). Personas show their last response, not an error state.
+- If 3 consecutive ticks fail, show a persistent warning with the error type (rate limit vs. network vs. Worker down).
+
+### Cloudflare Worker Unreachable
+
+- Same retry logic as Claude failures (the Worker is the intermediary, so a Worker failure looks like a Claude failure to the app).
+- The `/transcribe-token` endpoint is called once at session start. If it fails, the app cannot start listening — show a clear error with "Check your Worker deployment" guidance.
+
+### Permission Revocation Mid-Session
+
+- If Screen Recording permission is revoked: `SCStream` will stop delivering audio. The app detects the missing stream and falls back to mic-only mode with a notification: "System audio lost — running on microphone only."
+- If Microphone permission is revoked: similarly fall back to system audio only.
+- If both are revoked: pause the session and show a permission re-request flow.
+
+### Malformed Claude Responses
+
+- If Claude returns JSON that doesn't match the expected schema: log the raw response, skip the tick, continue. No crash, no user-visible error.
+- If Claude returns non-JSON (hallucination, system error): same — log and skip.
+- The `PersonaResponse` Codable model uses `decodeIfPresent` for all optional fields so partial responses are handled gracefully.
+
+---
+
+## App Lifecycle & Persistence
+
+### Settings Persistence
+
+All user settings are stored in `UserDefaults` and persist across launches. The settings table in this spec defines the defaults for first launch.
+
+### Session State
+
+Session state (transcript buffer, persona conversation history) is **ephemeral** — cleared on each new session start. The app does not attempt to resume a previous session on relaunch. If the user quits mid-show and relaunches, they start fresh. This is intentional: the transcript buffer and persona context are tied to a specific live show and don't carry over meaningfully.
+
+### Window State
+
+Window position, size, and "float on top" preference are persisted via `NSWindow.setFrameAutosaveName` so the window reappears in the same position after relaunch.
+
+---
+
+## Accessibility (v1 Scope)
+
+v1 does not target full WCAG compliance, but includes baseline accessibility:
+
+- **Keyboard navigation**: Mute toggle, pause, and settings are reachable via keyboard (Tab + Enter) in the WebView.
+- **Contrast ratios**: All accent colors on the `#0D0D0D` background meet WCAG AA minimum (4.5:1 for body text). Muted accents are used for decorative elements only — message text is high-contrast white/light grey.
+- **VoiceOver**: Not targeted in v1 (WebView content is dynamic and would require significant ARIA work). Noted as a future consideration.
 
 ---
 
