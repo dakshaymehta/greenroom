@@ -82,10 +82,12 @@ Hybrid native macOS app: Swift handles audio capture, transcription, AI orchestr
 - Auto-scroll with history expansion
 - Pure HTML/CSS/JS (no build step, no framework)
 
-**Cloudflare Worker** — API proxy:
+**Cloudflare Worker** — API proxy (BYOK — Bring Your Own Keys):
 
 - `/chat` — Claude API proxy (no keys in the app)
 - `/transcribe-token` — AssemblyAI temp token endpoint
+- Each user deploys their own Worker with their own API keys as Cloudflare secrets
+- The app stores the user's Worker URL in settings — first-run setup asks for it
 - Forked from Lore's existing Worker (Lore is the author's macOS AI companion app — the Worker structure and AssemblyAI patterns are proven in production there)
 
 ---
@@ -544,6 +546,7 @@ greenroom/
 
 | Setting            | Default    | Range         | Description                            |
 | ------------------ | ---------- | ------------- | -------------------------------------- |
+| Worker URL         | (none)     | URL string    | User's Cloudflare Worker URL (BYOK)    |
 | AI Interval        | 15s        | 5-60s         | How often to send transcript to Claude |
 | Model              | Sonnet 4.6 | Sonnet / Opus | Quality vs. speed/cost tradeoff        |
 | Fred SFX Volume    | 70%        | 0-100%        | Sound effects volume                   |
