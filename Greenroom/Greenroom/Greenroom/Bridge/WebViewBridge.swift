@@ -45,6 +45,14 @@ final class WebViewBridge: NSObject, WKScriptMessageHandler {
         }
     }
 
+    /// Forwards new transcript text to the sidebar so the UI can display a live transcript.
+    func sendTranscriptUpdate(_ text: String) {
+        let escaped = text.replacingOccurrences(of: "\\", with: "\\\\")
+                          .replacingOccurrences(of: "'", with: "\\'")
+                          .replacingOccurrences(of: "\n", with: "\\n")
+        evaluateJS("greenroom.onTranscriptUpdate('\(escaped)')")
+    }
+
     /// Tells the sidebar that a new AI tick is starting, so it can show thinking indicators.
     func sendTickStart() {
         evaluateJS("greenroom.onTickStart()")

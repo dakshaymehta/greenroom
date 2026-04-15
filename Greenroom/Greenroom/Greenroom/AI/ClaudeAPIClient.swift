@@ -102,6 +102,48 @@ final class ClaudeAPIClient {
         return parsePersonaUpdate(from: responseData)
     }
 
+    // MARK: - Exa Web Search
+
+    /// Searches the web via Exa through the Cloudflare Worker.
+    ///
+    /// Used by Gary to verify factual claims with real-time data. The Worker
+    /// proxies the request to Exa's neural search API so the API key stays
+    /// server-side.
+    func searchViaExa(query: String) async throws -> String {
+        let baseURLString = workerBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !baseURLString.isEmpty else { throw ClaudeAPIError.noWorkerURL }
+
+        guard let searchURL = URL(string: "\(baseURLString)/exa-search") else {
+            throw ClaudeAPIError.invalidURL
+        }
+
+        let requestBody: [String: Any] = ["query": query, "numResults": 3]
+        let jsonData = try JSONSerialization.data(withJSONObject: requestBody)
+
+        var request = URLRequest(url: searchURL)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = jsonData
+        request.timeoutInterval = 10
+
+        let (data, _) = try await URLSession.shared.data(for: request)
+
+        // Extract text snippets from Exa results for Claude context
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let results = json["results"] as? [[String: Any]] else {
+            return "No search results found."
+        }
+
+        var searchSummary = "Web search results for '\(query)':\n\n"
+        for (index, result) in results.prefix(3).enumerated() {
+            let title = result["title"] as? String ?? "Untitled"
+            let text = result["text"] as? String ?? ""
+            let url = result["url"] as? String ?? ""
+            searchSummary += "\(index + 1). \(title)\n\(String(text.prefix(300)))\nSource: \(url)\n\n"
+        }
+        return searchSummary
+    }
+
     // MARK: - Private Parsing
 
     /// Extracts the first content block's text from a Claude response and decodes

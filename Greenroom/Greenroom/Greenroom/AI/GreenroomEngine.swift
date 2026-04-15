@@ -97,8 +97,10 @@ final class GreenroomEngine {
     // MARK: - Transcript Input
 
     /// Accepts a new transcribed text segment and stores it in the buffer.
+    /// Also forwards the text to the sidebar so the UI can show a live transcript.
     func onTranscriptText(_ text: String) {
         transcriptBuffer.append(text)
+        bridge?.sendTranscriptUpdate(text)
     }
 
     // MARK: - Tick Loop
@@ -142,7 +144,17 @@ final class GreenroomEngine {
 
                 self.consecutiveFailureCount = 0
 
-                if let update = personaUpdate {
+                if var update = personaUpdate {
+                    // If Gary wants to verify a claim with web search, fetch results
+                    // from Exa and make a follow-up Claude call for a sourced response.
+                    if let searchQuery = update.gary?.searchQuery, !searchQuery.isEmpty {
+                        update = await self.enrichGaryWithSearch(
+                            searchQuery: searchQuery,
+                            currentUpdate: update,
+                            messagesForRequest: messagesForRequest
+                        )
+                    }
+
                     self.bridge?.sendPersonaUpdate(update)
 
                     // Let Fred play a sound effect if he chose one.
@@ -164,6 +176,52 @@ final class GreenroomEngine {
                 }
             }
         }
+    }
+
+    // MARK: - Exa Search Follow-Up
+
+    /// Fetches Exa search results and asks Claude to produce an updated, sourced
+    /// Gary response. Falls back to the original update if anything goes wrong —
+    /// a failed search should never block the rest of the persona responses.
+    private func enrichGaryWithSearch(
+        searchQuery: String,
+        currentUpdate: PersonaUpdate,
+        messagesForRequest: [[String: Any]]
+    ) async -> PersonaUpdate {
+        do {
+            let searchResults = try await claudeClient.searchViaExa(query: searchQuery)
+
+            let followUpMessage: [String: Any] = [
+                "role": "user",
+                "content": """
+                Here are the web search results for Gary's fact-check:
+
+                \(searchResults)
+
+                Please provide Gary's updated response with the sourced information. \
+                Return the same JSON format but only include Gary's updated response. \
+                The other personas should be null.
+                """
+            ]
+
+            let followUpMessages = messagesForRequest + [followUpMessage]
+            if let enrichedUpdate = try await claudeClient.sendRequest(
+                systemPrompt: PersonaPrompts.masterSystemPrompt,
+                messages: followUpMessages
+            ), let enrichedGary = enrichedUpdate.gary {
+                // Swap in the enriched Gary response, keep the other personas from the original.
+                return PersonaUpdate(
+                    gary: enrichedGary,
+                    fred: currentUpdate.fred,
+                    jackie: currentUpdate.jackie,
+                    troll: currentUpdate.troll
+                )
+            }
+        } catch {
+            print("[GreenroomEngine] Exa search follow-up failed (using original Gary response): \(error)")
+        }
+
+        return currentUpdate
     }
 
     // MARK: - Conversation History Management
