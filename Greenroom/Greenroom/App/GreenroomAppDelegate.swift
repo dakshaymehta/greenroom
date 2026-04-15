@@ -12,15 +12,15 @@ final class GreenroomAppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Properties
 
     private var windowController: GreenroomWindowController?
-
-    /// Coordinator that bridges the WebView to the native audio/AI pipeline.
-    /// Populated in Task 14 when the coordinator layer is introduced.
-    var coordinator: AnyObject? = nil
+    private var coordinator: GreenroomCoordinator?
 
     // MARK: - NSApplicationDelegate
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let controller = GreenroomWindowController()
+        let newCoordinator = GreenroomCoordinator()
+        coordinator = newCoordinator
+
+        let controller = GreenroomWindowController(coordinator: newCoordinator)
         windowController = controller
         controller.showWindow(nil)
     }

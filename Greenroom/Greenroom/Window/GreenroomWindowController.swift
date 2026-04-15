@@ -19,11 +19,17 @@ final class GreenroomWindowController: NSWindowController {
     private static let windowTitle = "Greenroom"
     private static let windowAutosaveName = "GreenroomMainWindow"
 
+    // MARK: - Properties
+
+    private let coordinator: GreenroomCoordinator
+    private let settingsPanel = GreenroomSettingsPanel()
+
     // MARK: - Initializer
 
-    /// Creates the controller without yet showing the window.
-    /// Call `showWindow(_:)` to display it.
-    init() {
+    /// Creates the controller with a coordinator that manages the audio/AI pipeline.
+    /// Call `showWindow(_:)` to display the window.
+    init(coordinator: GreenroomCoordinator) {
+        self.coordinator = coordinator
         // NSWindowController's designated initializer requires a window or nib name.
         // We build the window programmatically, so we call super.init(window:) with nil
         // and assign the window ourselves in buildWindowIfNeeded().
@@ -86,9 +92,44 @@ final class GreenroomWindowController: NSWindowController {
         let webView = buildWebView()
         mainWindow.contentView = webView
 
+        // Wire the bridge between the coordinator's engine and the sidebar JS.
+        let bridge = WebViewBridge()
+        bridge.attach(to: webView)
+        coordinator.engine.bridge = bridge
+
+        bridge.onSidebarAction = { [weak self] action in
+            guard let self = self else { return }
+            switch action.action {
+            case "toggleFredMute":
+                let isMuted = action.muted ?? false
+                self.coordinator.engine.updateSoundEffectsMuted(isMuted)
+            case "togglePause":
+                self.coordinator.engine.isPaused = action.paused ?? !self.coordinator.engine.isPaused
+            case "openSettings":
+                self.settingsPanel.show()
+            default:
+                break
+            }
+        }
+
         loadSidebarHTML(into: webView)
 
         self.window = mainWindow
+
+        // On first launch, open the settings panel so the user can configure their Worker URL.
+        let hasLaunchedBefore = UserDefaults.standard.bool(forKey: "hasLaunchedBefore")
+        if !hasLaunchedBefore {
+            UserDefaults.standard.set(true, forKey: "hasLaunchedBefore")
+            settingsPanel.show()
+        }
+
+        // Auto-start listening if a worker URL is already configured.
+        let workerBaseURL = UserDefaults.standard.string(forKey: "workerBaseURL") ?? ""
+        if !workerBaseURL.isEmpty {
+            Task {
+                await coordinator.startListening()
+            }
+        }
     }
 
     private func buildWebView() -> WKWebView {
