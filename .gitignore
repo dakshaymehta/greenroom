@@ -1,0 +1,24 @@
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+*.pbxuser
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+*.xccheckout
+
+# macOS
+.DS_Store
+*.swp
+*~
+
+# Node / Cloudflare Worker
+node_modules/
+.wrangler/
+worker/.dev.vars
+
+# Environment
+.env
+.env.local
