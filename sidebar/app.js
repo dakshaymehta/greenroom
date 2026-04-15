@@ -100,10 +100,31 @@ var Greenroom = (function () {
     Personas.setShowConfidence(show);
   }
 
+  // Update the transcript strip with the latest heard text.
+  // Uses a fade transition so the host sees smooth text changes.
+  function onTranscriptUpdate(text) {
+    var el = document.getElementById("transcript-text");
+    if (!el) return;
+
+    // Truncate to ~200 chars for compact display
+    var display = typeof text === "string" ? text : "";
+    if (display.length > 200) {
+      display = display.substring(0, 200) + "\u2026";
+    }
+
+    // Fade out, swap text, fade back in
+    el.classList.add("fading");
+    setTimeout(function () {
+      el.textContent = display || "Waiting for audio...";
+      el.classList.remove("fading");
+    }, 150);
+  }
+
   return {
     init: init,
     onPersonaUpdate: onPersonaUpdate,
     onTickStart: onTickStart,
+    onTranscriptUpdate: onTranscriptUpdate,
     setLiveStatus: setLiveStatus,
     setErrorStatus: setErrorStatus,
     setShowConfidence: setShowConfidence,
