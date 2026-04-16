@@ -11,8 +11,9 @@ final class TranscriptBuffer {
 
     // MARK: - Nested Types
 
-    /// A single piece of transcribed text with the timestamp it arrived.
-    private struct TimestampedText {
+    /// A single piece of transcribed text with stable identity for UI highlighting.
+    struct TranscriptSegment: Equatable, Identifiable {
+        let id: UUID
         let text: String
         let timestamp: Date
     }
@@ -29,7 +30,7 @@ final class TranscriptBuffer {
     // MARK: - Properties
 
     /// All segments currently held in the buffer, ordered from oldest to newest.
-    private var segments: [TimestampedText] = []
+    private var segments: [TranscriptSegment] = []
 
     /// The index into `segments` marking where the last tick boundary fell.
     ///
@@ -52,10 +53,33 @@ final class TranscriptBuffer {
     // MARK: - Public Interface
 
     /// Adds a new transcribed text segment to the buffer and prunes expired segments.
-    func append(_ text: String, at timestamp: Date = Date()) {
-        let segment = TimestampedText(text: text, timestamp: timestamp)
+    @discardableResult
+    func append(_ text: String, at timestamp: Date = Date()) -> TranscriptSegment {
+        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedText.isEmpty else {
+            if let lastSegment = segments.last {
+                return lastSegment
+            }
+
+            let emptySegment = TranscriptSegment(id: UUID(), text: "", timestamp: timestamp)
+            return emptySegment
+        }
+
+        if let lastSegment = segments.last,
+           let mergedSegment = mergedSegmentIfNeeded(
+            previousSegment: lastSegment,
+            incomingText: trimmedText,
+            timestamp: timestamp
+           ) {
+            segments[segments.count - 1] = mergedSegment
+            pruneOldSegments()
+            return mergedSegment
+        }
+
+        let segment = TranscriptSegment(id: UUID(), text: trimmedText, timestamp: timestamp)
         segments.append(segment)
         pruneOldSegments()
+        return segment
     }
 
     /// Records the current end of the buffer as the tick boundary.
@@ -89,6 +113,52 @@ final class TranscriptBuffer {
         return Chunk(newText: newText, contextText: contextText)
     }
 
+    /// Returns the most relevant transcript segment for a persona trigger quote.
+    ///
+    /// Persona triggers are intentionally short excerpts, so the matching logic
+    /// first looks for a normalized substring match and then falls back to
+    /// token-overlap scoring when punctuation or formatting differs slightly.
+    func bestMatchingSegment(for trigger: String, maximumSegmentsToSearch: Int = 40) -> TranscriptSegment? {
+        let normalizedTrigger = Self.normalizedSearchableText(from: trigger)
+        guard !normalizedTrigger.isEmpty else { return nil }
+
+        let candidateSegments = Array(segments.suffix(maximumSegmentsToSearch)).reversed()
+
+        if let exactMatch = candidateSegments.first(where: {
+            Self.normalizedSearchableText(from: $0.text).contains(normalizedTrigger)
+        }) {
+            return exactMatch
+        }
+
+        let triggerTokens = Self.significantTokens(from: normalizedTrigger)
+        guard !triggerTokens.isEmpty else { return nil }
+
+        var bestMatch: TranscriptSegment?
+        var bestScore = 0.0
+
+        for segment in candidateSegments {
+            let segmentTokens = Self.significantTokens(from: segment.text)
+            guard !segmentTokens.isEmpty else { continue }
+
+            let overlapCount = triggerTokens.intersection(segmentTokens).count
+            guard overlapCount > 0 else { continue }
+
+            let score = Double(overlapCount) / Double(triggerTokens.count)
+            if score > bestScore {
+                bestScore = score
+                bestMatch = segment
+            }
+        }
+
+        guard bestScore >= 0.4 else { return nil }
+        return bestMatch
+    }
+
+    func recentSegments(limit: Int? = nil) -> [TranscriptSegment] {
+        guard let limit else { return segments }
+        return Array(segments.suffix(limit))
+    }
+
     /// Removes segments that have exceeded `maxStorageDurationSeconds` and adjusts the boundary.
     ///
     /// We remove from the front of the array and shift the boundary index down accordingly.
@@ -106,6 +176,129 @@ final class TranscriptBuffer {
         // Clamp to zero in case we removed segments that were after the boundary
         // (which shouldn't happen in normal use, but is safe to handle).
         lastTickBoundaryIndex = max(0, lastTickBoundaryIndex - numberOfExpiredSegments)
+    }
+
+    private static func normalizedSearchableText(from text: String) -> String {
+        let lowercaseText = text.lowercased()
+        let scalarCharacters = lowercaseText.unicodeScalars.map { scalar -> Character in
+            if CharacterSet.alphanumerics.contains(scalar) || CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                return Character(scalar)
+            }
+            return " "
+        }
+
+        return String(scalarCharacters)
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+    }
+
+    private static func significantTokens(from text: String) -> Set<String> {
+        Set(
+            normalizedSearchableText(from: text)
+                .split(separator: " ")
+                .map(String.init)
+                .filter { $0.count >= 3 }
+        )
+    }
+
+    private func mergedSegmentIfNeeded(
+        previousSegment: TranscriptSegment,
+        incomingText: String,
+        timestamp: Date
+    ) -> TranscriptSegment? {
+        guard !incomingText.isEmpty else { return previousSegment }
+
+        let normalizedPreviousText = Self.normalizedSearchableText(from: previousSegment.text)
+        let normalizedIncomingText = Self.normalizedSearchableText(from: incomingText)
+
+        guard !normalizedPreviousText.isEmpty,
+              !normalizedIncomingText.isEmpty else {
+            return nil
+        }
+
+        let shouldMergeForward = normalizedIncomingText.hasPrefix(normalizedPreviousText)
+        let shouldMergeBackward = normalizedPreviousText.hasPrefix(normalizedIncomingText)
+
+        if shouldMergeForward || shouldMergeBackward {
+            let preferredText = incomingText.count >= previousSegment.text.count
+                ? incomingText
+                : previousSegment.text
+
+            return TranscriptSegment(
+                id: previousSegment.id,
+                text: preferredText,
+                timestamp: timestamp
+            )
+        }
+
+        guard shouldMergeShortContinuation(
+            previousText: previousSegment.text,
+            incomingText: incomingText,
+            timestamp: timestamp,
+            previousTimestamp: previousSegment.timestamp
+        ) else {
+            return nil
+        }
+
+        let mergedContinuationText = mergedContinuationText(
+            previousText: previousSegment.text,
+            incomingText: incomingText
+        )
+
+        return TranscriptSegment(
+            id: previousSegment.id,
+            text: mergedContinuationText,
+            timestamp: timestamp
+        )
+    }
+
+    private func shouldMergeShortContinuation(
+        previousText: String,
+        incomingText: String,
+        timestamp: Date,
+        previousTimestamp: Date
+    ) -> Bool {
+        let continuationWindowSeconds: TimeInterval = 2.5
+        guard timestamp.timeIntervalSince(previousTimestamp) <= continuationWindowSeconds else {
+            return false
+        }
+
+        let trimmedPreviousText = previousText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let continuationMarkers = ["—", "-", "…", "...", ":"]
+        guard continuationMarkers.contains(where: { trimmedPreviousText.hasSuffix($0) }) else {
+            return false
+        }
+
+        let incomingWordCount = incomingText.split(whereSeparator: \.isWhitespace).count
+        return incomingText.count <= 48 || incomingWordCount <= 6
+    }
+
+    private func mergedContinuationText(previousText: String, incomingText: String) -> String {
+        var previousTextWithoutMarker = previousText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if previousTextWithoutMarker.hasSuffix("...") {
+            previousTextWithoutMarker.removeLast(3)
+        } else if let finalCharacter = previousTextWithoutMarker.last,
+                  ["—", "-", "…", ":"].contains(finalCharacter) {
+            previousTextWithoutMarker.removeLast()
+        }
+
+        previousTextWithoutMarker = previousTextWithoutMarker.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        var incomingWords = incomingText.split(whereSeparator: \.isWhitespace).map(String.init)
+        let previousWords = previousTextWithoutMarker.split(whereSeparator: \.isWhitespace).map(String.init)
+
+        if let previousWord = previousWords.last?.lowercased(),
+           let incomingWord = incomingWords.first?.lowercased(),
+           previousWord == incomingWord {
+            incomingWords.removeFirst()
+        }
+
+        let cleanedIncomingText = incomingWords.joined(separator: " ")
+        guard !cleanedIncomingText.isEmpty else { return previousTextWithoutMarker }
+        guard !previousTextWithoutMarker.isEmpty else { return cleanedIncomingText }
+
+        return "\(previousTextWithoutMarker) \(cleanedIncomingText)"
     }
 }
 

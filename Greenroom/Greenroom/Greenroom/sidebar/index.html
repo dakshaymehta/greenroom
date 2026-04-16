@@ -7,103 +7,226 @@
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <header id="status-bar">
-      <span class="logo">GREENROOM</span>
-      <div id="live-indicator" class="status-indicator">
-        <span class="status-dot"></span>
-        <span class="status-label">OFFLINE</span>
-      </div>
-    </header>
-
-    <section id="transcript-strip">
-      <div id="transcript-text">Waiting for audio...</div>
-    </section>
-
-    <main id="persona-container">
-      <!-- Gary — Fact Checker -->
-      <section class="persona-lane" data-persona="gary">
-        <div class="persona-header">
-          <img
-            class="persona-avatar"
-            src="assets/gary.png"
-            alt=""
-            onerror="this.style.display = 'none'"
-          />
-          <span class="persona-name">Gary</span>
-          <span class="persona-role">Fact Checker</span>
+    <div class="app-shell">
+      <header id="status-bar">
+        <div class="brand-lockup">
+          <span class="brand-orb" aria-hidden="true"></span>
+          <div class="brand-copy">
+            <span class="logo">Greenroom</span>
+            <span class="logo-subtitle">Live transcript, fact checks, and room cues</span>
+          </div>
         </div>
-        <div class="persona-messages">
-          <div class="message-bubble placeholder">Listening...</div>
+
+        <div id="live-indicator" class="status-indicator">
+          <span class="status-dot"></span>
+          <span class="status-label">Ready</span>
         </div>
-        <canvas class="sine-wave" data-persona="gary"></canvas>
+      </header>
+
+      <section id="workspace-panel">
+        <section id="transcript-strip">
+          <div class="section-heading">
+            <span class="section-eyebrow">Now Hearing</span>
+            <span id="transcript-mode" class="transcript-mode" hidden></span>
+          </div>
+          <div id="transcript-text" aria-live="polite">Waiting for audio...</div>
+        </section>
+
+        <div id="workspace-body">
+          <main id="persona-container">
+            <section class="persona-lane state-idle" data-persona="gary">
+              <div class="persona-surface">
+                <div class="persona-header">
+                  <img
+                    class="persona-avatar"
+                    src="assets/gary.png"
+                    alt=""
+                    onerror="this.style.display = 'none'"
+                  />
+
+                  <div class="persona-identity">
+                    <div class="persona-title-row">
+                      <span class="persona-name">Gary</span>
+                      <span class="persona-role">Fact Checker</span>
+                    </div>
+                    <div class="persona-status-row">
+                      <span class="persona-state-badge">Ready</span>
+                      <span class="persona-state-detail"
+                        >Waiting for a fresh claim to verify.</span
+                      >
+                    </div>
+                  </div>
+                </div>
+
+                <div class="persona-messages">
+                  <div class="message-bubble placeholder">Waiting for a factual claim.</div>
+                </div>
+              </div>
+            </section>
+
+            <section class="persona-lane state-idle" data-persona="fred">
+              <div class="persona-surface">
+                <div class="persona-header">
+                  <img
+                    class="persona-avatar"
+                    src="assets/fred.png"
+                    alt=""
+                    onerror="this.style.display = 'none'"
+                  />
+
+                  <div class="persona-identity">
+                    <div class="persona-title-row">
+                      <span class="persona-name">Fred</span>
+                      <span class="persona-role">Sound Engineer</span>
+                    </div>
+                    <div class="persona-status-row">
+                      <span class="persona-state-badge">Ready</span>
+                      <span class="persona-state-detail"
+                        >Waiting for a tone or timing change worth cueing.</span
+                      >
+                    </div>
+                  </div>
+
+                  <button
+                    id="fred-mute"
+                    class="mute-toggle"
+                    title="Mute Fred"
+                    aria-label="Mute Fred"
+                  >
+                    &#x1F50A;
+                  </button>
+                </div>
+
+                <div class="persona-messages">
+                  <div class="message-bubble placeholder">Waiting for a cue.</div>
+                </div>
+              </div>
+            </section>
+
+            <section class="persona-lane state-idle" data-persona="jackie">
+              <div class="persona-surface">
+                <div class="persona-header">
+                  <img
+                    class="persona-avatar"
+                    src="assets/jackie.png"
+                    alt=""
+                    onerror="this.style.display = 'none'"
+                  />
+
+                  <div class="persona-identity">
+                    <div class="persona-title-row">
+                      <span class="persona-name">Jackie</span>
+                      <span class="persona-role">Comedy Writer</span>
+                    </div>
+                    <div class="persona-status-row">
+                      <span class="persona-state-badge">Ready</span>
+                      <span class="persona-state-detail"
+                        >Waiting for a setup that can be sharpened.</span
+                      >
+                    </div>
+                  </div>
+                </div>
+
+                <div class="persona-messages">
+                  <div class="message-bubble placeholder">Waiting for a setup.</div>
+                </div>
+              </div>
+            </section>
+
+            <section class="persona-lane state-idle" data-persona="troll">
+              <div class="persona-surface">
+                <div class="persona-header">
+                  <img
+                    class="persona-avatar"
+                    src="assets/troll.png"
+                    alt=""
+                    onerror="this.style.display = 'none'"
+                  />
+
+                  <div class="persona-identity">
+                    <div class="persona-title-row">
+                      <span class="persona-name">The Troll</span>
+                      <span class="persona-role">Chaos Agent</span>
+                    </div>
+                    <div class="persona-status-row">
+                      <span class="persona-state-badge">Ready</span>
+                      <span class="persona-state-detail"
+                        >Waiting for a weak assumption to push on.</span
+                      >
+                    </div>
+                  </div>
+                </div>
+
+                <div class="persona-messages">
+                  <div class="message-bubble placeholder">Waiting for a weak spot.</div>
+                </div>
+              </div>
+            </section>
+          </main>
+
+          <aside id="context-panel" aria-label="Connected transcript view">
+            <div class="context-panel-header">
+              <div>
+                <span class="section-eyebrow">Connected Transcript</span>
+                <p class="context-panel-copy">
+                  Live lines land here and stay attached to the persona reactions that used them.
+                </p>
+              </div>
+              <div class="context-persona-key" aria-hidden="true">
+                <span class="context-key-chip gary">Gary</span>
+                <span class="context-key-chip fred">Fred</span>
+                <span class="context-key-chip jackie">Jackie</span>
+                <span class="context-key-chip troll">The Troll</span>
+              </div>
+            </div>
+
+            <div id="context-empty" class="context-empty-state">
+              Transcript lines appear here as soon as the stream starts returning live turns.
+            </div>
+
+            <div id="context-list" class="context-list" hidden></div>
+          </aside>
+        </div>
       </section>
 
-      <!-- Fred — Sound Engineer -->
-      <section class="persona-lane" data-persona="fred">
-        <div class="persona-header">
-          <img
-            class="persona-avatar"
-            src="assets/fred.png"
-            alt=""
-            onerror="this.style.display = 'none'"
-          />
-          <span class="persona-name">Fred</span>
-          <span class="persona-role">Sound Engineer</span>
-          <button id="fred-mute" class="mute-toggle" title="Mute Fred">
-            &#x1F50A;
+      <footer id="controls">
+        <div class="controls-shell">
+          <button
+            id="btn-settings"
+            class="control-btn"
+            title="Settings"
+            aria-label="Open settings"
+          >
+            &#x2699;
+          </button>
+          <button
+            id="btn-layout"
+            class="control-btn"
+            title="Toggle compact and detail mode"
+            aria-label="Toggle compact and detail mode"
+          >
+            &#x21F2;
+          </button>
+          <button
+            id="btn-transcript"
+            class="control-btn"
+            title="Toggle transcript viewer"
+            aria-label="Toggle transcript viewer"
+          >
+            &#x1F4DD;
+          </button>
+          <button
+            id="btn-pause"
+            class="control-btn"
+            title="Pause"
+            aria-label="Pause persona updates"
+          >
+            &#x23F8;
           </button>
         </div>
-        <div class="persona-messages">
-          <div class="message-bubble placeholder">Listening...</div>
-        </div>
-        <canvas class="sine-wave" data-persona="fred"></canvas>
-      </section>
+      </footer>
+    </div>
 
-      <!-- Jackie — Comedy Writer -->
-      <section class="persona-lane" data-persona="jackie">
-        <div class="persona-header">
-          <img
-            class="persona-avatar"
-            src="assets/jackie.png"
-            alt=""
-            onerror="this.style.display = 'none'"
-          />
-          <span class="persona-name">Jackie</span>
-          <span class="persona-role">Comedy Writer</span>
-        </div>
-        <div class="persona-messages">
-          <div class="message-bubble placeholder">Listening...</div>
-        </div>
-        <canvas class="sine-wave" data-persona="jackie"></canvas>
-      </section>
-
-      <!-- The Troll -->
-      <section class="persona-lane" data-persona="troll">
-        <div class="persona-header">
-          <img
-            class="persona-avatar"
-            src="assets/troll.png"
-            alt=""
-            onerror="this.style.display = 'none'"
-          />
-          <span class="persona-name">The Troll</span>
-          <span class="persona-role">Chaos Agent</span>
-        </div>
-        <div class="persona-messages">
-          <div class="message-bubble placeholder">Listening...</div>
-        </div>
-        <canvas class="sine-wave" data-persona="troll"></canvas>
-      </section>
-    </main>
-
-    <footer id="controls">
-      <button id="btn-settings" class="control-btn" title="Settings">
-        &#x2699;
-      </button>
-      <button id="btn-pause" class="control-btn" title="Pause">&#x23F8;</button>
-    </footer>
-
-    <script src="sinewave.js"></script>
     <script src="personas.js"></script>
     <script src="app.js"></script>
   </body>

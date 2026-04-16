@@ -29,6 +29,23 @@ enum SoundEffectLibrary {
         "chef-kiss":      "sfx_chef_kiss.mp3"
     ]
 
+    /// System sound fallback names used when the custom bundled sound pack
+    /// is unavailable in a clean checkout or development build.
+    private static let effectNameToFallbackSystemSoundName: [String: String] = [
+        "rimshot":        "Funk",
+        "ba-dum-tss":     "Hero",
+        "laugh-track":    "Purr",
+        "wrong-buzzer":   "Sosumi",
+        "sad-trombone":   "Submarine",
+        "crickets":       "Bottle",
+        "dun-dun-dun":    "Morse",
+        "airhorn":        "Hero",
+        "dramatic-sting": "Hero",
+        "ding":           "Tink",
+        "applause":       "Ping",
+        "chef-kiss":      "Glass"
+    ]
+
     // MARK: - Public Interface
 
     /// Returns the bundle file name for a given logical effect name, or nil if unknown.
@@ -37,6 +54,10 @@ enum SoundEffectLibrary {
     /// means the AI returned a value that doesn't match the prompt's valid list.
     static func fileName(for effectName: String) -> String? {
         return effectNameToFileName[effectName]
+    }
+
+    static func fallbackSystemSoundName(for effectName: String) -> String? {
+        return effectNameToFallbackSystemSoundName[effectName]
     }
 
     /// All registered effect names, sorted alphabetically.

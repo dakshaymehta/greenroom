@@ -1,3 +1,4 @@
+import AppKit
 import AVFoundation
 import Foundation
 
@@ -13,6 +14,7 @@ final class SoundEffectEngine {
 
     /// The currently active player, if a sound is in progress.
     private var currentPlayer: AVAudioPlayer?
+    private var currentSystemSound: NSSound?
 
     /// Output volume for all effects, between 0.0 (silent) and 1.0 (full).
     ///
@@ -39,6 +41,11 @@ final class SoundEffectEngine {
     func play(effectName: String) {
         guard !isMuted else { return }
 
+        currentPlayer?.stop()
+        currentSystemSound?.stop()
+        currentPlayer = nil
+        currentSystemSound = nil
+
         guard let fileName = SoundEffectLibrary.fileName(for: effectName) else {
             print("[SoundEffectEngine] Unknown effect name '\(effectName)' — ignoring. Valid names: \(SoundEffectLibrary.allEffectNames.joined(separator: ", "))")
             return
@@ -47,7 +54,16 @@ final class SoundEffectEngine {
         // Audio files live in a "Sounds" subdirectory inside the app bundle.
         // Using a subdirectory prevents name collisions with other bundled resources.
         guard let soundURL = Bundle.main.url(forResource: fileName, withExtension: nil, subdirectory: "Sounds") else {
-            print("[SoundEffectEngine] Could not find '\(fileName)' in bundle Sounds directory")
+            if let fallbackSoundName = SoundEffectLibrary.fallbackSystemSoundName(for: effectName),
+               let fallbackSound = NSSound(named: NSSound.Name(fallbackSoundName)) {
+                fallbackSound.volume = volume
+                fallbackSound.play()
+                currentSystemSound = fallbackSound
+                print("[SoundEffectEngine] Using fallback system sound '\(fallbackSoundName)' for missing bundle asset '\(fileName)'")
+                return
+            }
+
+            print("[SoundEffectEngine] Could not find '\(fileName)' in bundle Sounds directory and no fallback sound was available")
             return
         }
 
@@ -67,6 +83,8 @@ final class SoundEffectEngine {
     /// Stops any currently playing sound immediately.
     func stop() {
         currentPlayer?.stop()
+        currentSystemSound?.stop()
         currentPlayer = nil
+        currentSystemSound = nil
     }
 }

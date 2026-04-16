@@ -37,9 +37,7 @@ final class WebViewBridge: NSObject, WKScriptMessageHandler {
             let jsonString = try update.toJSONString()
             // We wrap the JSON string in JSON.parse() so the JS receives a proper object,
             // not a string that would need its own parsing step on that side.
-            let escapedJSON = jsonString.replacingOccurrences(of: "\\", with: "\\\\")
-                                        .replacingOccurrences(of: "'", with: "\\'")
-            evaluateJS("greenroom.onPersonaUpdate(JSON.parse('\(escapedJSON)'))")
+            evaluateJS("greenroom.onPersonaUpdate(JSON.parse(\(javaScriptStringLiteral(jsonString))))")
         } catch {
             print("[WebViewBridge] Failed to serialize PersonaUpdate: \(error)")
         }
@@ -47,10 +45,29 @@ final class WebViewBridge: NSObject, WKScriptMessageHandler {
 
     /// Forwards new transcript text to the sidebar so the UI can display a live transcript.
     func sendTranscriptUpdate(_ text: String) {
-        let escaped = text.replacingOccurrences(of: "\\", with: "\\\\")
-                          .replacingOccurrences(of: "'", with: "\\'")
-                          .replacingOccurrences(of: "\n", with: "\\n")
-        evaluateJS("greenroom.onTranscriptUpdate('\(escaped)')")
+        evaluateJS("greenroom.onTranscriptUpdate(\(javaScriptStringLiteral(text)))")
+    }
+
+    /// Sends the structured transcript timeline used by the expanded workspace view.
+    func sendTranscriptContext(_ snapshot: TranscriptContextSnapshot) {
+        do {
+            let jsonString = try JSONEncoder().encode(snapshot)
+            guard let stringValue = String(data: jsonString, encoding: .utf8) else {
+                return
+            }
+
+            evaluateJS(
+                "greenroom.onTranscriptContextUpdate(JSON.parse(\(javaScriptStringLiteral(stringValue))))"
+            )
+        } catch {
+            print("[WebViewBridge] Failed to serialize TranscriptContextSnapshot: \(error)")
+        }
+    }
+
+    /// Updates the external transcript viewer button state inside the sidebar.
+    func setTranscriptWindowVisible(_ isVisible: Bool) {
+        let booleanLiteral = isVisible ? "true" : "false"
+        evaluateJS("greenroom.setTranscriptWindowVisible(\(booleanLiteral))")
     }
 
     /// Tells the sidebar that a new AI tick is starting, so it can show thinking indicators.
@@ -66,9 +83,7 @@ final class WebViewBridge: NSObject, WKScriptMessageHandler {
 
     /// Puts the status indicator into an error state and displays the given message.
     func setErrorStatus(_ message: String) {
-        // Single quotes delimit the JS string, so we escape any that appear in the message.
-        let escapedMessage = message.replacingOccurrences(of: "'", with: "\\'")
-        evaluateJS("greenroom.setErrorStatus('\(escapedMessage)')")
+        evaluateJS("greenroom.setErrorStatus(\(javaScriptStringLiteral(message)))")
     }
 
     // MARK: - JS → Swift (WKScriptMessageHandler)
@@ -77,7 +92,7 @@ final class WebViewBridge: NSObject, WKScriptMessageHandler {
     ///
     /// The message body is expected to be a dictionary matching the SidebarAction shape.
     /// We re-encode it to JSON and decode it into our Swift type so we have a clean, typed value.
-    nonisolated func userContentController(
+    func userContentController(
         _ userContentController: WKUserContentController,
         didReceive message: WKScriptMessage
     ) {
@@ -89,9 +104,7 @@ final class WebViewBridge: NSObject, WKScriptMessageHandler {
         do {
             let jsonData = try JSONSerialization.data(withJSONObject: bodyDictionary)
             let sidebarAction = try JSONDecoder().decode(SidebarAction.self, from: jsonData)
-            Task { @MainActor in
-                self.onSidebarAction?(sidebarAction)
-            }
+            onSidebarAction?(sidebarAction)
         } catch {
             print("[WebViewBridge] Failed to decode SidebarAction from message body: \(error)")
         }
@@ -114,5 +127,14 @@ final class WebViewBridge: NSObject, WKScriptMessageHandler {
                 print("[WebViewBridge] JavaScript evaluation error for script '\(script)': \(error)")
             }
         }
+    }
+
+    private func javaScriptStringLiteral(_ value: String) -> String {
+        guard let encodedValue = try? JSONEncoder().encode(value),
+              let javaScriptString = String(data: encodedValue, encoding: .utf8) else {
+            return "\"\""
+        }
+
+        return javaScriptString
     }
 }

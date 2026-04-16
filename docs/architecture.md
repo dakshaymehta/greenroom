@@ -93,7 +93,7 @@ Requires the **Screen Recording** permission. If revoked mid-session, `onStreamL
 
 ### Microphone (AVAudioEngine)
 
-`MicrophoneCaptureEngine` installs a tap on the audio engine's input node. The tap requests 16kHz mono Float32, which AVAudioEngine resamples from the hardware's native rate automatically. `AudioFormatConverter` then converts Float32 samples to PCM s16le (clamp to [-1, 1], scale by Int16.max).
+`MicrophoneCaptureEngine` installs a tap on the audio engine's input node using the hardware's native format, then normalizes each buffer through a reusable `AVAudioConverter` into 16kHz mono PCM s16le. This avoids tap-format mismatch errors on devices whose microphones do not run at 16kHz natively.
 
 ### Audio Mixer
 
@@ -113,19 +113,22 @@ Requires the **Screen Recording** permission. If revoked mid-session, `onStreamL
 
 - URL: `wss://streaming.assemblyai.com/v3/ws`
 - Parameters: `sample_rate=16000`, `encoding=pcm_s16le`, `format_turns=true`, `speech_model=u3-rt-pro`, `language_detection=true`
-- Audio frames sent as `{"audio": "<base64>"}` JSON messages
-- Completed speech turns (`type: "turn"` with `end_of_turn: true`) are forwarded to the engine
+- Audio frames are streamed as raw binary PCM bytes
+- The provider waits for the initial websocket `Begin` event before audio is allowed onto the wire
+- Completed speech turns (`type: "Turn"` / `type: "turn"`) are forwarded to the engine
 
 **Socket management:** A single shared `URLSession` is reused for the app lifetime. Creating sessions per connection causes Code 57 socket errors on rapid reconnects.
 
 ## Transcript Buffer
 
-`TranscriptBuffer` accumulates timestamped text segments in a rolling 5-minute window. It maintains a **tick boundary** index that separates "already sent to AI" segments from "new since last tick" segments.
+`TranscriptBuffer` accumulates timestamped text segments with stable IDs in a rolling 5-minute window. It maintains a **tick boundary** index that separates "already sent to AI" segments from "new since last tick" segments.
 
 On each AI tick, `extractChunk()` returns:
 
 - **newText** — segments after the boundary (what the AI should respond to)
 - **contextText** — segments before the boundary within the configurable context window (so the AI understands references)
+
+`TranscriptContextStore` mirrors those segments for UI use and applies persona highlights by matching each persona's trigger quote back onto the most relevant transcript line. The transcript viewer window reads from this store.
 
 ## AI Engine
 
@@ -194,7 +197,7 @@ Sound effects live in a `Sounds/` subdirectory inside the app bundle. Unknown ef
 
 ## Sidebar UI
 
-The sidebar is vanilla HTML/CSS/JS loaded from `sidebar/index.html`:
+The sidebar is vanilla HTML/CSS/JS loaded from `Greenroom/Greenroom/Greenroom/sidebar/index.html`:
 
 - **4 persona lanes** — each with avatar, name, role, message bubbles, and a sine wave canvas
 - **Sine wave animations** — idle (flat line), thinking (subtle wave), active (prominent wave) in each persona's accent color
@@ -217,7 +220,7 @@ greenroom/
 │       ├── Transcription/        # TranscriptBuffer, TranscriptionProvider, AssemblyAIProvider
 │       ├── Window/               # WindowController, SettingsPanel
 │       └── Utilities/            # DesignTokens
-├── sidebar/                      # WebView UI (loaded into WKWebView)
+├── Greenroom/Greenroom/Greenroom/sidebar/  # WebView UI (loaded into WKWebView)
 │   ├── index.html
 │   ├── styles.css
 │   ├── app.js                    # Main module, native bridge interface

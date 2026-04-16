@@ -1,8 +1,7 @@
-// Persona management module — handles message display and history
 var Personas = (function () {
   var MAX_HISTORY = 50;
-  var MAX_VISIBLE = 5;
-  var IDLE_DELAY_MS = 3000;
+  var MAX_VISIBLE = 1;
+  var IDLE_DELAY_MS = 3600;
 
   var history = {
     gary: [],
@@ -14,111 +13,181 @@ var Personas = (function () {
   var idleTimers = {};
   var showConfidence = false;
 
-  function setShowConfidence(show) {
-    showConfidence = show;
+  var PERSONA_COPY = {
+    gary: {
+      descriptor: "Checks claims against live sources.",
+      idleBadge: "Ready",
+      idleDetail: "Checks claims against live sources.",
+      idleSignal: "Waiting to verify",
+      thinkingBadge: "Checking",
+      thinkingDetail: "Verifies checkable claims and keeps the sources close.",
+      thinkingSignal: "Scanning for a factual cue",
+      placeholder: "No factual claim worth checking yet.",
+    },
+    fred: {
+      descriptor: "Tracks timing, tone, and cue-worthy shifts.",
+      idleBadge: "Ready",
+      idleDetail: "Tracks timing, tone, and cue-worthy shifts.",
+      idleSignal: "Watching the beat",
+      thinkingBadge: "Timing",
+      thinkingDetail: "Tracks tone, timing, and cue-worthy shifts in the room.",
+      thinkingSignal: "Timing the moment",
+      placeholder: "No cue worth scoring yet.",
+    },
+    jackie: {
+      descriptor: "Finds setups worth sharpening.",
+      idleBadge: "Ready",
+      idleDetail: "Finds setups worth sharpening.",
+      idleSignal: "No clean punchline yet",
+      thinkingBadge: "Writing",
+      thinkingDetail: "Looks for setups that can turn into something sharper.",
+      thinkingSignal: "Building a line",
+      placeholder: "No punchline worth keeping yet.",
+    },
+    troll: {
+      descriptor: "Pressure-tests weak logic.",
+      idleBadge: "Ready",
+      idleDetail: "Pressure-tests weak logic.",
+      idleSignal: "No pressure point yet",
+      thinkingBadge: "Circling",
+      thinkingDetail: "Pushes on weak assumptions and sloppy logic.",
+      thinkingSignal: "Testing the argument",
+      placeholder: "No weak spot worth pressing yet.",
+    },
+  };
+
+  function initClickToExpand() {
+    var headers = document.querySelectorAll(".persona-header");
+    for (var i = 0; i < headers.length; i++) {
+      headers[i].addEventListener("click", handleHeaderClick);
+    }
+
+    var personas = Object.keys(PERSONA_COPY);
+    for (var j = 0; j < personas.length; j++) {
+      syncLaneState(personas[j], "idle", null);
+      syncLaneOccupancy(personas[j]);
+      ensurePlaceholder(personas[j]);
+    }
   }
 
-  function getShowConfidence() {
-    return showConfidence;
+  function setShowConfidence(show) {
+    showConfidence = !!show;
   }
 
   function updatePersona(persona, data) {
+    var lane = getLane(persona);
+    if (!lane) return;
+
     if (data === null || data === undefined) {
-      SineWave.setState(persona, "idle");
+      clearIdleTimer(persona);
+      syncLaneState(persona, "idle", getLatestData(persona));
+      syncLaneOccupancy(persona);
+      ensurePlaceholder(persona);
       return;
     }
 
-    SineWave.setState(persona, "active");
-
-    var lane = document.querySelector(
-      '.persona-lane[data-persona="' + persona + '"]',
-    );
-    if (!lane) return;
-
-    var container = lane.querySelector(".persona-messages");
-    if (!container) return;
-
-    // Remove placeholder if present
-    var placeholder = container.querySelector(".message-bubble.placeholder");
-    if (placeholder) {
-      container.removeChild(placeholder);
-    }
-
-    // Mark existing non-old bubbles as old
-    var existingBubbles = container.querySelectorAll(
-      ".message-bubble:not(.old)",
-    );
-    for (var i = 0; i < existingBubbles.length; i++) {
-      existingBubbles[i].classList.add("old");
-    }
-
-    // Build the new message bubble using safe DOM methods
-    var bubble = document.createElement("div");
-    bubble.classList.add("message-bubble");
-
-    // Add trigger quote if present — shows what moment triggered this response
-    if (data.trigger) {
-      var triggerQuote = document.createElement("div");
-      triggerQuote.classList.add("trigger-quote");
-      triggerQuote.textContent = 're: "' + data.trigger + '"';
-      bubble.appendChild(triggerQuote);
-    }
-
-    // Fred with sound effect
-    if (persona === "fred" && data.effect) {
-      var sfxIndicator = document.createElement("span");
-      sfxIndicator.classList.add("sfx-indicator");
-      sfxIndicator.textContent = "\uD83D\uDD0A " + data.effect;
-      bubble.appendChild(sfxIndicator);
-
-      if (data.context) {
-        var contextNode = document.createElement("span");
-        contextNode.textContent = " " + data.context;
-        bubble.appendChild(contextNode);
-      }
-    } else if (data.text) {
-      // Append text as a text node so it doesn't overwrite the trigger quote
-      var messageText = data.text;
-      if (
-        persona === "gary" &&
-        showConfidence &&
-        typeof data.confidence === "number"
-      ) {
-        var confidencePercent = Math.round(data.confidence * 100);
-        messageText = data.text + " (" + confidencePercent + "%)";
-      }
-      bubble.appendChild(document.createTextNode(messageText));
-    }
-
-    container.appendChild(bubble);
-
-    // Store in history
     history[persona].push({
       data: data,
       timestamp: Date.now(),
     });
 
-    // Trim history to max
     if (history[persona].length > MAX_HISTORY) {
       history[persona] = history[persona].slice(-MAX_HISTORY);
     }
 
-    // Trim visible bubbles (only when not expanded)
-    var isExpanded = lane.classList.contains("expanded");
-    if (!isExpanded) {
+    syncLaneOccupancy(persona);
+
+    var container = getMessageContainer(persona);
+    if (!container) return;
+
+    removePlaceholder(container);
+
+    if (lane.classList.contains("expanded")) {
+      rebuildHistory(persona);
+    } else {
+      markVisibleMessagesOld(container);
+      container.appendChild(buildMessageBubble(persona, data, false));
       trimVisibleBubbles(container);
     }
 
-    // Auto-scroll if expanded
-    if (isExpanded) {
-      container.scrollTop = container.scrollHeight;
+    syncLaneState(persona, "active", data);
+    scheduleIdle(persona);
+  }
+
+  function setAllThinking() {
+    var personas = Object.keys(PERSONA_COPY);
+    for (var i = 0; i < personas.length; i++) {
+      clearIdleTimer(personas[i]);
+      syncLaneState(personas[i], "thinking", getLatestData(personas[i]));
+    }
+  }
+
+  function handleHeaderClick(event) {
+    if (event.target.closest(".mute-toggle")) return;
+
+    var lane = event.currentTarget.closest(".persona-lane");
+    if (!lane) return;
+
+    var persona = lane.getAttribute("data-persona");
+    var shouldExpand = !lane.classList.contains("expanded");
+
+    collapseAllLanesExcept(shouldExpand ? lane : null);
+
+    if (shouldExpand) {
+      lane.classList.add("expanded");
+      rebuildHistory(persona);
+    } else {
+      lane.classList.remove("expanded");
+      var container = getMessageContainer(persona);
+      if (container) {
+        trimVisibleBubbles(container);
+        ensurePlaceholder(persona);
+      }
     }
 
-    // Reset sine wave to idle after delay
-    clearIdleTimer(persona);
-    idleTimers[persona] = setTimeout(function () {
-      SineWave.setState(persona, "idle");
-    }, IDLE_DELAY_MS);
+    document.body.classList.toggle(
+      "has-expanded-lane",
+      !!document.querySelector(".persona-lane.expanded"),
+    );
+  }
+
+  function collapseAllLanesExcept(activeLane) {
+    var lanes = document.querySelectorAll(".persona-lane");
+    for (var i = 0; i < lanes.length; i++) {
+      var lane = lanes[i];
+      if (lane === activeLane) continue;
+
+      lane.classList.remove("expanded");
+      var persona = lane.getAttribute("data-persona");
+      var container = getMessageContainer(persona);
+      if (container) {
+        trimVisibleBubbles(container);
+        ensurePlaceholder(persona);
+      }
+    }
+  }
+
+  function rebuildHistory(persona) {
+    var container = getMessageContainer(persona);
+    if (!container) return;
+
+    while (container.firstChild) {
+      container.removeChild(container.firstChild);
+    }
+
+    var entries = history[persona];
+    if (!entries.length) {
+      syncLaneOccupancy(persona);
+      ensurePlaceholder(persona);
+      return;
+    }
+
+    for (var i = 0; i < entries.length; i++) {
+      var isHistorical = i !== entries.length - 1;
+      container.appendChild(buildMessageBubble(persona, entries[i].data, isHistorical));
+    }
+
+    container.scrollTop = container.scrollHeight;
   }
 
   function trimVisibleBubbles(container) {
@@ -129,128 +198,415 @@ var Personas = (function () {
     }
   }
 
+  function ensurePlaceholder(persona) {
+    if (history[persona].length > 0) return;
+
+    var container = getMessageContainer(persona);
+    if (!container) return;
+
+    var existingPlaceholder = container.querySelector(".message-bubble.placeholder");
+    if (existingPlaceholder) return;
+
+    var placeholder = document.createElement("div");
+    placeholder.className = "message-bubble placeholder";
+    placeholder.textContent = PERSONA_COPY[persona].placeholder;
+    container.appendChild(placeholder);
+  }
+
+  function removePlaceholder(container) {
+    var placeholder = container.querySelector(".message-bubble.placeholder");
+    if (placeholder) {
+      container.removeChild(placeholder);
+    }
+  }
+
+  function markVisibleMessagesOld(container) {
+    var activeBubbles = container.querySelectorAll(".message-bubble:not(.old):not(.placeholder)");
+    for (var i = 0; i < activeBubbles.length; i++) {
+      activeBubbles[i].classList.add("old");
+    }
+  }
+
+  function syncLaneState(persona, state, data) {
+    var lane = getLane(persona);
+    if (!lane) return;
+
+    lane.classList.remove("state-idle", "state-thinking", "state-active");
+    lane.classList.add("state-" + state);
+
+    var badge = lane.querySelector(".persona-state-badge");
+    var detail = lane.querySelector(".persona-state-detail");
+    var signal = lane.querySelector(".persona-signal-label");
+    var count = lane.querySelector(".persona-response-count");
+
+    var copy = resolveCopy(persona, state, data);
+
+    if (badge) badge.textContent = copy.badge;
+    if (detail) detail.textContent = copy.detail;
+    if (signal) signal.textContent = copy.signal;
+    if (count) count.textContent = padCount(history[persona].length);
+  }
+
+  function syncLaneOccupancy(persona) {
+    var lane = getLane(persona);
+    if (!lane) return;
+
+    var hasResponse = history[persona].length > 0;
+    lane.classList.toggle("has-response", hasResponse);
+    lane.classList.toggle("is-empty", !hasResponse);
+  }
+
+  function resolveCopy(persona, state, data) {
+    var defaults = PERSONA_COPY[persona];
+    var latest = getLatestData(persona);
+
+    if (state === "thinking") {
+      return {
+        badge: defaults.thinkingBadge,
+        detail: defaults.descriptor,
+        signal: defaults.thinkingSignal,
+      };
+    }
+
+    if (state === "active" && data) {
+      return {
+        badge: activeBadge(persona, data),
+        detail: defaults.descriptor,
+        signal: activeSignal(persona, data),
+      };
+    }
+
+    return {
+      badge: defaults.idleBadge,
+      detail: defaults.descriptor,
+      signal: latest ? "Last: " + activeSignal(persona, latest) : defaults.idleSignal,
+    };
+  }
+
+  function activeBadge(persona, data) {
+    if (persona === "gary") {
+      if (data.verdict) return humanizeVerdict(data.verdict);
+      if (Array.isArray(data.sources) && data.sources.length) return "Sourced";
+      if (data.searchQuery) return "Checking";
+      return "Watching";
+    }
+
+    if (persona === "fred") return "Cue ready";
+    if (persona === "jackie") return "Riff ready";
+    return "Pushback";
+  }
+
+  function activeDetail(persona, data) {
+    var quote = formatQuotedTrigger(data && data.trigger, 40);
+
+    if (persona === "gary") {
+      if (Array.isArray(data.sources) && data.sources.length) {
+        return "Checked " + quote + " against live reporting";
+      }
+      if (data.searchQuery) {
+        return "Running a live check on " + quote;
+      }
+      return "Watching " + quote;
+    }
+
+    if (persona === "fred") return "Timed for " + quote;
+    if (persona === "jackie") return "Built from " + quote;
+    return "Pressing on " + quote;
+  }
+
+  function activeSignal(persona, data) {
+    if (persona === "gary") {
+      var verdict = humanizeVerdict(data && data.verdict);
+
+      if (data && data.sourceNote) return data.sourceNote;
+      if (data && Array.isArray(data.sources) && data.sources.length) {
+        return (
+          data.sources.length +
+          " linked source" +
+          (data.sources.length === 1 ? "" : "s")
+        );
+      }
+      if (verdict) return verdict;
+      if (data && data.searchQuery) return "Searching for independent confirmation";
+      if (data && typeof data.confidence === "number") {
+        return Math.round(data.confidence * 100) + "% confidence";
+      }
+      return "No solid source yet";
+    }
+
+    if (persona === "fred") {
+      return data && data.effect ? "Cue: " + humanizeText(data.effect) : "Cue selected";
+    }
+
+    if (persona === "jackie") return "Found a punchline";
+    return "Found a pressure point";
+  }
+
+  function buildMessageBubble(persona, data, isHistorical) {
+    var bubble = document.createElement("div");
+    bubble.className = "message-bubble";
+    if (isHistorical) {
+      bubble.classList.add("old");
+    }
+
+    var metaItems = buildMetaItems(persona, data);
+    if (metaItems.length) {
+      var metaRow = document.createElement("div");
+      metaRow.className = "message-meta-row";
+      for (var i = 0; i < metaItems.length; i++) {
+        metaRow.appendChild(buildPill(metaItems[i]));
+      }
+      bubble.appendChild(metaRow);
+    }
+
+    if (data && data.trigger) {
+      var reaction = document.createElement("div");
+      reaction.className = "message-reaction";
+
+      var reactionLabel = document.createElement("span");
+      reactionLabel.className = "message-reaction-label";
+      reactionLabel.textContent = persona === "gary" ? "Claim" : "Picked up";
+
+      var reactionText = document.createElement("span");
+      reactionText.className = "message-reaction-text";
+      reactionText.textContent = formatQuotedTrigger(data.trigger, 78);
+
+      reaction.appendChild(reactionLabel);
+      reaction.appendChild(reactionText);
+      bubble.appendChild(reaction);
+    }
+
+    var bodyText = buildBodyText(persona, data);
+    if (bodyText) {
+      var body = document.createElement("div");
+      body.className = "message-body";
+      body.textContent = bodyText;
+      bubble.appendChild(body);
+    }
+
+    var secondaryText = buildSecondaryText(persona, data);
+    if (secondaryText) {
+      var secondary = document.createElement("div");
+      secondary.className = "message-secondary";
+      secondary.textContent = secondaryText;
+      bubble.appendChild(secondary);
+    }
+
+    if (persona === "gary" && Array.isArray(data.sources) && data.sources.length) {
+      bubble.appendChild(buildSourceList(data.sources));
+    }
+
+    return bubble;
+  }
+
+  function buildMetaItems(persona, data) {
+    var items = [];
+
+    if (persona === "gary") {
+      if (data.verdict) {
+        items.push({
+          label: humanizeVerdict(data.verdict),
+          className: "verdict-" + sanitizeToken(data.verdict),
+        });
+      }
+
+      if (showConfidence && typeof data.confidence === "number") {
+        items.push({
+          label: Math.round(data.confidence * 100) + "% confidence",
+          className: "confidence",
+        });
+      }
+
+      if (Array.isArray(data.sources) && data.sources.length) {
+        items.push({
+          label: data.sources.length + " sources",
+          className: "search",
+        });
+      } else if (data.searchQuery) {
+        items.push({
+          label: "Live check",
+          className: "search",
+        });
+      }
+    }
+
+    if (persona === "fred" && data.effect) {
+      items.push({
+        label: humanizeText(data.effect),
+        className: "effect",
+      });
+    }
+
+    return items;
+  }
+
+  function buildPill(item) {
+    var pill = document.createElement("span");
+    pill.className = "message-pill";
+    if (item.className) {
+      pill.classList.add(item.className);
+    }
+    pill.textContent = item.label;
+    return pill;
+  }
+
+  function buildBodyText(persona, data) {
+    if (persona === "fred") {
+      if (data.context) return data.context;
+      if (data.effect) return "Fred queued " + humanizeText(data.effect) + " for this beat.";
+      return "";
+    }
+
+    return data.text || "";
+  }
+
+  function buildSecondaryText(persona, data) {
+    if (persona !== "gary") return "";
+
+    if (data.sourceNote) {
+      return data.sourceNote;
+    }
+
+    if (Array.isArray(data.sources) && data.sources.length) {
+      return (
+        data.sources.length +
+        " linked source" +
+        (data.sources.length === 1 ? "" : "s")
+      );
+    }
+
+    if (data.searchQuery) {
+      return "Checking this claim against live sources";
+    }
+
+    return "";
+  }
+
+  function buildSourceList(sources) {
+    var list = document.createElement("div");
+    list.className = "message-source-list";
+
+    for (var i = 0; i < sources.length && i < 3; i++) {
+      var source = sources[i];
+      var chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "message-source-chip";
+      chip.title = source.title + " — " + source.url;
+      chip.setAttribute("aria-label", "Open source: " + source.title);
+      chip.addEventListener("click", function (event) {
+        var target = event.currentTarget;
+        if (!target || !target.dataset || !target.dataset.url) return;
+        postSidebarAction({
+          action: "openSource",
+          url: target.dataset.url,
+        });
+      });
+      chip.dataset.url = source.url;
+
+      var host = document.createElement("strong");
+      host.textContent = source.host;
+
+      var title = document.createElement("span");
+      title.textContent = truncate(source.title, 34);
+
+      chip.appendChild(host);
+      chip.appendChild(title);
+      list.appendChild(chip);
+    }
+
+    return list;
+  }
+
+  function scheduleIdle(persona) {
+    clearIdleTimer(persona);
+    idleTimers[persona] = window.setTimeout(function () {
+      syncLaneState(persona, "idle", getLatestData(persona));
+    }, IDLE_DELAY_MS);
+  }
+
   function clearIdleTimer(persona) {
     if (idleTimers[persona]) {
-      clearTimeout(idleTimers[persona]);
+      window.clearTimeout(idleTimers[persona]);
       idleTimers[persona] = null;
     }
   }
 
-  function setThinking(persona) {
-    SineWave.setState(persona, "thinking");
-  }
-
-  function setAllThinking() {
-    var personas = ["gary", "fred", "jackie", "troll"];
-    for (var i = 0; i < personas.length; i++) {
-      setThinking(personas[i]);
-    }
-  }
-
-  function initClickToExpand() {
-    var headers = document.querySelectorAll(".persona-header");
-    for (var i = 0; i < headers.length; i++) {
-      headers[i].addEventListener("click", handleHeaderClick);
-    }
-  }
-
-  function handleHeaderClick(event) {
-    // Don't toggle if clicking mute button
-    if (event.target.closest(".mute-toggle")) return;
-
-    var lane = event.currentTarget.closest(".persona-lane");
-    if (!lane) return;
-
-    var persona = lane.getAttribute("data-persona");
-    var isExpanding = !lane.classList.contains("expanded");
-
-    lane.classList.toggle("expanded");
-
-    if (isExpanding && persona && history[persona].length > 0) {
-      // Rebuild full history in the container
-      rebuildHistory(lane, persona);
-    } else if (!isExpanding) {
-      // Collapse: trim back to recent
-      var container = lane.querySelector(".persona-messages");
-      if (container) {
-        trimVisibleBubbles(container);
-      }
-    }
-  }
-
-  function rebuildHistory(lane, persona) {
-    var container = lane.querySelector(".persona-messages");
-    if (!container) return;
-
-    // Clear current contents
-    while (container.firstChild) {
-      container.removeChild(container.firstChild);
-    }
-
-    // Rebuild from history
+  function getLatestData(persona) {
     var entries = history[persona];
-    for (var i = 0; i < entries.length; i++) {
-      var entry = entries[i];
-      var data = entry.data;
-      var isLatest = i === entries.length - 1;
+    if (!entries.length) return null;
+    return entries[entries.length - 1].data;
+  }
 
-      var bubble = document.createElement("div");
-      bubble.classList.add("message-bubble");
-      if (!isLatest) {
-        bubble.classList.add("old");
-      }
+  function getLane(persona) {
+    return document.querySelector('.persona-lane[data-persona="' + persona + '"]');
+  }
 
-      // Add trigger quote if present
-      if (data.trigger) {
-        var triggerQuote = document.createElement("div");
-        triggerQuote.classList.add("trigger-quote");
-        triggerQuote.textContent = 're: "' + data.trigger + '"';
-        bubble.appendChild(triggerQuote);
-      }
+  function getMessageContainer(persona) {
+    var lane = getLane(persona);
+    return lane ? lane.querySelector(".persona-messages") : null;
+  }
 
-      if (persona === "fred" && data.effect) {
-        var sfxIndicator = document.createElement("span");
-        sfxIndicator.classList.add("sfx-indicator");
-        sfxIndicator.textContent = "\uD83D\uDD0A " + data.effect;
-        bubble.appendChild(sfxIndicator);
-
-        if (data.context) {
-          var contextNode = document.createElement("span");
-          contextNode.textContent = " " + data.context;
-          bubble.appendChild(contextNode);
-        }
-      } else if (data.text) {
-        // Append text as a text node so it doesn't overwrite the trigger quote
-        var messageText = data.text;
-        if (
-          persona === "gary" &&
-          showConfidence &&
-          typeof data.confidence === "number"
-        ) {
-          var confidencePercent = Math.round(data.confidence * 100);
-          messageText = data.text + " (" + confidencePercent + "%)";
-        }
-        bubble.appendChild(document.createTextNode(messageText));
-      }
-
-      // Skip animation for rebuilt history items
-      if (!isLatest) {
-        bubble.style.animation = "none";
-      }
-
-      container.appendChild(bubble);
+  function postSidebarAction(message) {
+    if (
+      window.greenroom &&
+      typeof window.greenroom.postAction === "function"
+    ) {
+      window.greenroom.postAction(message);
     }
+  }
 
-    // Scroll to bottom
-    container.scrollTop = container.scrollHeight;
+  function humanizeVerdict(verdict) {
+    switch (sanitizeToken(verdict)) {
+      case "confirmed":
+        return "Confirmed";
+      case "contradicted":
+        return "Contradicted";
+      case "context":
+        return "Needs context";
+      case "unclear":
+        return "Still unclear";
+      default:
+        return humanizeText(verdict || "");
+    }
+  }
+
+  function humanizeText(text) {
+    if (!text) return "";
+
+    var words = String(text).replace(/[_-]+/g, " ").split(" ");
+    for (var i = 0; i < words.length; i++) {
+      if (!words[i]) continue;
+      words[i] = words[i].charAt(0).toUpperCase() + words[i].slice(1);
+    }
+    return words.join(" ");
+  }
+
+  function sanitizeToken(value) {
+    return String(value || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+  }
+
+  function formatQuotedTrigger(text, maxLength) {
+    if (!text) return "\u201cthe latest moment\u201d";
+    return "\u201c" + truncate(String(text), maxLength) + "\u201d";
+  }
+
+  function truncate(text, maxLength) {
+    if (!text || text.length <= maxLength) return text || "";
+    return text.slice(0, maxLength - 1) + "\u2026";
+  }
+
+  function padCount(value) {
+    var number = Math.max(0, value || 0);
+    return number < 10 ? "0" + number : String(number);
   }
 
   return {
-    updatePersona: updatePersona,
-    setThinking: setThinking,
-    setAllThinking: setAllThinking,
     initClickToExpand: initClickToExpand,
+    updatePersona: updatePersona,
+    setAllThinking: setAllThinking,
     setShowConfidence: setShowConfidence,
-    getShowConfidence: getShowConfidence,
   };
 })();

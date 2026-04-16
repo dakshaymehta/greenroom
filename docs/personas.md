@@ -174,7 +174,7 @@ struct PersonaUpdate: Codable {
 
 ### 3. Add the Sidebar Lane
 
-In `sidebar/index.html`, add a new persona lane inside `#persona-container`:
+In `Greenroom/Greenroom/Greenroom/sidebar/index.html`, add a new persona lane inside `#persona-container`:
 
 ```html
 <section class="persona-lane" data-persona="newpersona">
@@ -197,7 +197,7 @@ In `sidebar/index.html`, add a new persona lane inside `#persona-container`:
 
 ### 4. Add the Accent Color
 
-In `sidebar/styles.css`, add the accent color:
+In `Greenroom/Greenroom/Greenroom/sidebar/styles.css`, add the accent color:
 
 ```css
 :root {
@@ -212,7 +212,7 @@ In `sidebar/styles.css`, add the accent color:
 }
 ```
 
-In `sidebar/sinewave.js`, add the color to `ACCENT_COLORS`:
+In `Greenroom/Greenroom/Greenroom/sidebar/sinewave.js`, add the color to `ACCENT_COLORS`:
 
 ```js
 var ACCENT_COLORS = {
@@ -224,7 +224,7 @@ var ACCENT_COLORS = {
 };
 ```
 
-In `sidebar/personas.js`, initialize history for the new persona:
+In `Greenroom/Greenroom/Greenroom/sidebar/personas.js`, initialize history for the new persona:
 
 ```js
 var history = {
@@ -236,7 +236,7 @@ var history = {
 };
 ```
 
-In `sidebar/app.js`, add the persona to the update loop:
+In `Greenroom/Greenroom/Greenroom/sidebar/app.js`, add the persona to the update loop:
 
 ```js
 var personas = ["gary", "fred", "jackie", "troll", "newpersona"];

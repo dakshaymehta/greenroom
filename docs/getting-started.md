@@ -171,7 +171,7 @@ All four personas return `null` when they have nothing to say. Quiet ticks are n
 | Setting        | Default           | Range         | Description                               |
 | -------------- | ----------------- | ------------- | ----------------------------------------- |
 | Worker URL     | —                 | —             | Your Cloudflare Worker URL                |
-| Model          | Claude Sonnet 4.6 | Sonnet / Opus | Claude model for persona responses        |
+| Model          | Claude Sonnet 4   | Sonnet / Opus | Claude model for persona responses        |
 | Tick Interval  | 15s               | 5–60s         | How often the AI processes new transcript |
 | Context Window | 2 min             | 1–5 min       | How much prior transcript the AI can see  |
 | SFX Muted      | Off               | —             | Mute Fred's sound effects                 |

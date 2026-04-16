@@ -23,6 +23,8 @@ final class GreenroomCoordinator {
     // MARK: - State
 
     private var isListening = false
+    private var activeWorkerBaseURL: String?
+    private var isRecoveringTranscription = false
 
     // MARK: - Listening Lifecycle
 
@@ -37,30 +39,33 @@ final class GreenroomCoordinator {
     func startListening() async {
         guard !isListening else { return }
         isListening = true
+        audioMixer.reset()
 
-        let workerBaseURL = UserDefaults.standard.string(forKey: "workerBaseURL") ?? ""
+        let workerBaseURL = WorkerURLNormalizer.normalize(
+            UserDefaults.standard.string(forKey: "workerBaseURL")
+        )
         if workerBaseURL.isEmpty {
             engine.bridge?.setErrorStatus("Set your Worker URL in Settings to get started")
             isListening = false
             return
         }
 
+        let audioMixer = self.audioMixer
+        let transcriptionProvider = self.transcriptionProvider
+
         // Wire audio mixer output → transcription provider input.
-        audioMixer.onMixedAudio = { [weak self] audioData in
-            self?.transcriptionProvider.feedAudio(audioData)
+        audioMixer.onMixedAudio = { audioData in
+            transcriptionProvider.feedAudio(audioData)
         }
 
-        // Wire system audio capture → format conversion → mixer.
-        systemAudioCaptureEngine.onAudioBuffer = { [weak self] sampleBuffer in
-            guard let convertedData = AudioFormatConverter.convertCMSampleBufferToPCM16Data(sampleBuffer: sampleBuffer) else {
-                return
-            }
-            self?.audioMixer.receiveSystemAudio(convertedData)
+        // Wire normalized system audio → mixer.
+        systemAudioCaptureEngine.onAudioData = { audioData in
+            audioMixer.receiveSystemAudio(audioData)
         }
 
-        // Wire microphone capture → mixer (mic data is already PCM s16le).
-        microphoneCaptureEngine.onAudioData = { [weak self] data in
-            self?.audioMixer.receiveMicrophoneAudio(data)
+        // Wire microphone capture → mixer (mic data is already normalized PCM16).
+        microphoneCaptureEngine.onAudioData = { audioData in
+            audioMixer.receiveMicrophoneAudio(audioData)
         }
 
         // Notify the bridge if either audio source drops out mid-session.
@@ -74,18 +79,11 @@ final class GreenroomCoordinator {
         // Start the transcription WebSocket. This must succeed before audio capture
         // begins, otherwise we'd be dropping audio frames with nowhere to send them.
         do {
-            try await transcriptionProvider.start(
-                workerBaseURL: workerBaseURL,
-                onText: { [weak self] text in
-                    self?.engine.onTranscriptText(text)
-                },
-                onError: { error in
-                    print("[GreenroomCoordinator] Transcription error: \(error)")
-                }
-            )
+            try await startTranscriptionSession(workerBaseURL: workerBaseURL)
         } catch {
             print("[GreenroomCoordinator] Failed to start transcription: \(error)")
             engine.bridge?.setErrorStatus("Transcription failed to connect: \(error.localizedDescription)")
+            activeWorkerBaseURL = nil
             isListening = false
             return
         }
@@ -106,15 +104,116 @@ final class GreenroomCoordinator {
         }
 
         // Everything is wired and streaming — kick off the AI tick loop.
+        activeWorkerBaseURL = workerBaseURL
         engine.start()
     }
 
     /// Tears down every subsystem in reverse order of startup.
     func stopListening() async {
         isListening = false
+        activeWorkerBaseURL = nil
         engine.stop()
         transcriptionProvider.stop()
+        audioMixer.reset()
         await systemAudioCaptureEngine.stop()
         microphoneCaptureEngine.stop()
+    }
+
+    /// Re-applies persisted settings that affect the live pipeline without
+    /// requiring the user to relaunch the app after editing Settings.
+    func refreshListeningConfiguration() async {
+        let configuredWorkerBaseURL = WorkerURLNormalizer.normalize(
+            UserDefaults.standard.string(forKey: "workerBaseURL")
+        )
+
+        engine.refreshTimingConfiguration()
+
+        guard !configuredWorkerBaseURL.isEmpty else {
+            if isListening {
+                await stopListening()
+            }
+            engine.bridge?.setErrorStatus("Set your Worker URL in Settings to get started")
+            return
+        }
+
+        if isListening, configuredWorkerBaseURL == activeWorkerBaseURL {
+            return
+        }
+
+        if isListening {
+            await stopListening()
+        }
+
+        await startListening()
+    }
+
+    // MARK: - Transcription Recovery
+
+    private func startTranscriptionSession(workerBaseURL: String) async throws {
+        try await transcriptionProvider.start(
+            workerBaseURL: workerBaseURL,
+            onUpdate: { [weak self] update in
+                self?.engine.onTranscriptionUpdate(update)
+            },
+            onError: { [weak self] error in
+                print("[GreenroomCoordinator] Transcription error: \(error)")
+
+                Task { @MainActor [weak self] in
+                    await self?.recoverFromTranscriptionDrop(error)
+                }
+            }
+        )
+    }
+
+    private func recoverFromTranscriptionDrop(_ error: Error) async {
+        guard isListening else { return }
+        guard !isRecoveringTranscription else { return }
+
+        let workerBaseURL = activeWorkerBaseURL ?? WorkerURLNormalizer.normalize(
+            UserDefaults.standard.string(forKey: "workerBaseURL")
+        )
+        guard !workerBaseURL.isEmpty else {
+            await shutDownAfterTranscriptionFailure(
+                message: "Transcription disconnected — add your Worker URL and try again"
+            )
+            return
+        }
+
+        isRecoveringTranscription = true
+        defer { isRecoveringTranscription = false }
+
+        engine.clearLiveTranscriptDraft()
+        engine.bridge?.setErrorStatus("Transcription connection dropped — reconnecting...")
+
+        for attempt in 1...3 {
+            transcriptionProvider.stop()
+
+            if attempt > 1 {
+                try? await Task.sleep(for: .milliseconds(600 * attempt))
+            }
+
+            do {
+                try await startTranscriptionSession(workerBaseURL: workerBaseURL)
+                engine.bridge?.setLiveStatus(true)
+                return
+            } catch {
+                print("[GreenroomCoordinator] Reconnect attempt \(attempt) failed: \(error)")
+            }
+        }
+
+        await shutDownAfterTranscriptionFailure(
+            message: "Transcription disconnected — press play again to reconnect"
+        )
+    }
+
+    private func shutDownAfterTranscriptionFailure(message: String) async {
+        isListening = false
+        activeWorkerBaseURL = nil
+        transcriptionProvider.stop()
+        audioMixer.reset()
+        await systemAudioCaptureEngine.stop()
+        microphoneCaptureEngine.stop()
+        engine.stop()
+        engine.bridge?.setErrorStatus(message)
     }
 }

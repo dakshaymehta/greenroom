@@ -1,5 +1,11 @@
 import Foundation
 
+struct TranscriptionUpdate: Equatable {
+    let text: String
+    let isFinal: Bool
+    let turnOrder: Int?
+}
+
 /// Defines the interface that all real-time transcription backends must satisfy.
 ///
 /// The protocol decouples the audio pipeline from any specific transcription
@@ -12,14 +18,14 @@ protocol TranscriptionProvider {
     /// - Parameters:
     ///   - workerBaseURL: Base URL of the Cloudflare Worker that vends short-lived
     ///     transcription tokens, e.g. `"https://worker.example.com"`.
-    ///   - onText: Called on the main actor whenever a completed speech turn arrives.
-    ///     The string includes a trailing space so callers can concatenate turns
-    ///     directly without adding their own delimiter.
+    ///   - onUpdate: Called on the main actor whenever the backend emits a live
+    ///     transcript update. Partial updates keep the UI feeling responsive;
+    ///     final updates are the ones callers should commit to longer-lived stores.
     ///   - onError: Called on the main actor if the connection drops or the service
     ///     returns an error. The provider stops automatically after calling this.
     func start(
         workerBaseURL: String,
-        onText: @escaping (String) -> Void,
+        onUpdate: @escaping (TranscriptionUpdate) -> Void,
         onError: @escaping (Error) -> Void
     ) async throws
 

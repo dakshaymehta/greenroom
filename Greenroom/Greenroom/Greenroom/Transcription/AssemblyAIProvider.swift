@@ -1,70 +1,50 @@
 import Foundation
 
-/// Streams audio to AssemblyAI's real-time transcription WebSocket API and
-/// delivers completed speech turns as plain text strings.
+/// Streams PCM16 audio to AssemblyAI's real-time WebSocket API and delivers
+/// live transcript updates as turns evolve.
 ///
-/// Token management: we cache the short-lived token from the worker and reuse it
-/// for up to 400 seconds (AssemblyAI tokens expire at 480 s, so 400 s gives a
-/// comfortable margin before expiry).
-///
-/// Socket management: we use a single shared URLSession for the lifetime of the
-/// app rather than creating a new session per connection. Rapid session creation
-/// and teardown can cause Code 57 "Socket not connected" errors because macOS
-/// doesn't always release the underlying socket handle immediately. Reusing the
-/// session avoids this — a proven pattern from the Lore project.
-@MainActor
-final class AssemblyAIProvider: TranscriptionProvider {
+/// The provider is intentionally not main-actor isolated because audio chunks
+/// arrive on background queues at high frequency. We keep websocket state on a
+/// dedicated queue and only hop to the main queue when surfacing transcript updates
+/// or errors back to the UI layer.
+final class AssemblyAIProvider: TranscriptionProvider, @unchecked Sendable {
 
-    // MARK: - Shared Session
-
-    /// One session for the entire app lifetime. URLSession is thread-safe and
-    /// cheap to reuse; creating a new one per call is the common mistake that
-    /// triggers Code 57 socket errors on rapid reconnects.
     private static let sharedURLSession: URLSession = {
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForRequest = 30
-        configuration.timeoutIntervalForResource = 60 * 60 // 1 hour max session
+        configuration.timeoutIntervalForResource = 60 * 60
         return URLSession(configuration: configuration)
     }()
 
-    // MARK: - Properties
+    private let stateQueue = DispatchQueue(label: "com.greenroom.assemblyai.state")
+    private let sendQueue = DispatchQueue(label: "com.greenroom.assemblyai.send")
 
     private var webSocketTask: URLSessionWebSocketTask?
-
-    /// The most recently fetched token from the worker.
     private var cachedToken: String?
-
-    /// When the cached token was fetched, used to decide if a refresh is needed.
     private var tokenFetchedAt: Date?
-
-    private var onText: ((String) -> Void)?
+    private var onUpdate: ((TranscriptionUpdate) -> Void)?
     private var onError: ((Error) -> Void)?
-
-    /// Guards against feeding audio or starting a receive loop after `stop()` is called.
     private var isRunning = false
-
-    /// True once the websocket handshake completes and the server is ready.
-    /// Audio is silently dropped until this is true, preventing Code 57 errors.
     private var isSocketReady = false
+    private var readyContinuation: CheckedContinuation<Void, Error>?
+    private var lastDeliveredUpdateByTurnOrder: [Int: TranscriptionUpdate] = [:]
+    private var lastDeliveredUnorderedUpdate: TranscriptionUpdate?
 
-    // MARK: - TranscriptionProvider
-
-    /// Fetches a token, opens the AssemblyAI WebSocket, and starts receiving transcription events.
-    ///
-    /// The WebSocket URL parameters:
-    /// - `sample_rate=16000` — matches our capture engine output
-    /// - `encoding=pcm_s16le` — raw 16-bit signed little-endian bytes (no container)
-    /// - `format_turns=true` — receive structured turn objects instead of word-level events
-    /// - `speech_model=u3-rt-pro` — Universal-3 real-time pro model, highest accuracy
-    /// - `language_detection=true` — automatic language identification per turn
     func start(
         workerBaseURL: String,
-        onText: @escaping (String) -> Void,
+        onUpdate: @escaping (TranscriptionUpdate) -> Void,
         onError: @escaping (Error) -> Void
     ) async throws {
-        self.onText = onText
+        self.onUpdate = onUpdate
         self.onError = onError
-        self.isRunning = true
+
+        stateQueue.sync {
+            isRunning = true
+            isSocketReady = false
+            readyContinuation = nil
+            lastDeliveredUpdateByTurnOrder.removeAll()
+            lastDeliveredUnorderedUpdate = nil
+        }
 
         let token = try await fetchToken(workerBaseURL: workerBaseURL)
 
@@ -75,7 +55,6 @@ final class AssemblyAIProvider: TranscriptionProvider {
         urlComponents.queryItems = [
             URLQueryItem(name: "sample_rate", value: "16000"),
             URLQueryItem(name: "encoding", value: "pcm_s16le"),
-            URLQueryItem(name: "format_turns", value: "true"),
             URLQueryItem(name: "speech_model", value: "u3-rt-pro"),
             URLQueryItem(name: "language_detection", value: "true"),
             URLQueryItem(name: "token", value: token),
@@ -85,59 +64,66 @@ final class AssemblyAIProvider: TranscriptionProvider {
             throw TranscriptionError.invalidURL
         }
 
-        let task = AssemblyAIProvider.sharedURLSession.webSocketTask(with: websocketURL)
-        self.webSocketTask = task
-        self.isSocketReady = false
-        task.resume()
+        do {
+            try await openWebSocket(at: websocketURL)
+        } catch {
+            let nsError = error as NSError
+            guard nsError.domain == NSPOSIXErrorDomain, nsError.code == 57 else {
+                throw error
+            }
 
-        // Start the receive loop. The first message from AssemblyAI is a session
-        // confirmation — isSocketReady is set to true when we receive it, which
-        // unblocks feedAudio(). This prevents Code 57 errors from sending audio
-        // before the websocket handshake completes.
-        receiveMessages()
-
-        // Give the websocket a moment to establish before returning.
-        // The coordinator starts audio capture immediately after this returns,
-        // so a brief delay here prevents the initial burst of Code 57 errors.
-        try await Task.sleep(for: .milliseconds(500))
+            print("[AssemblyAIProvider] Stale websocket connection detected (Code 57), retrying once")
+            try await Task.sleep(for: .milliseconds(300))
+            try await openWebSocket(at: websocketURL)
+        }
     }
 
-    /// Base64-encodes the audio bytes and sends them as a JSON message to AssemblyAI.
-    ///
-    /// AssemblyAI's streaming v3 API expects `{"audio": "<base64>"}` frames.
-    /// We silently drop the frame if the socket isn't running — this can happen
-    /// for a brief window between `stop()` being called and the audio tap being removed.
     func feedAudio(_ data: Data) {
-        guard isRunning, isSocketReady, let task = webSocketTask else { return }
+        sendQueue.async { [weak self] in
+            guard let self else { return }
 
-        let base64AudioString = data.base64EncodedString()
-        let jsonPayload = "{\"audio\":\"\(base64AudioString)\"}"
-        let message = URLSessionWebSocketTask.Message.string(jsonPayload)
+            let task: URLSessionWebSocketTask? = self.stateQueue.sync {
+                guard self.isRunning, self.isSocketReady else { return nil }
+                return self.webSocketTask
+            }
 
-        task.send(message) { error in
-            // Send errors here are non-fatal — a single dropped frame is
-            // acceptable in a live stream. Persistent errors surface through
-            // the receive loop's error handling instead.
-            if let error = error {
-                print("[AssemblyAIProvider] Audio send error: \(error)")
+            guard let task else { return }
+
+            task.send(.data(data)) { error in
+                if let error {
+                    print("[AssemblyAIProvider] Audio send error: \(error)")
+
+                    let nsError = error as NSError
+                    if nsError.domain == NSPOSIXErrorDomain || nsError.domain == NSURLErrorDomain {
+                        self.failSocket(with: error)
+                    }
+                }
             }
         }
     }
 
-    /// Sends a normal-closure signal and tears down the WebSocket.
     func stop() {
-        isRunning = false
-        webSocketTask?.cancel(with: .normalClosure, reason: nil)
-        webSocketTask = nil
+        let task: URLSessionWebSocketTask? = stateQueue.sync {
+            isRunning = false
+            isSocketReady = false
+            lastDeliveredUpdateByTurnOrder.removeAll()
+            lastDeliveredUnorderedUpdate = nil
+
+            if let readyContinuation {
+                self.readyContinuation = nil
+                readyContinuation.resume(throwing: CancellationError())
+            }
+
+            let activeTask = webSocketTask
+            webSocketTask = nil
+            onUpdate = nil
+            onError = nil
+            return activeTask
+        }
+
+        task?.cancel(with: .normalClosure, reason: nil)
     }
 
-    // MARK: - Token Fetching
-
-    /// Returns a valid token, fetching a new one from the worker if the cache has expired.
-    ///
-    /// The 400-second cache window is intentionally shorter than AssemblyAI's 480-second
-    /// token lifetime to ensure we never attempt to connect with an expired token due to
-    /// clock skew or network latency.
     private func fetchToken(workerBaseURL: String) async throws -> String {
         let tokenCacheLifetimeSeconds: TimeInterval = 400
 
@@ -147,7 +133,8 @@ final class AssemblyAIProvider: TranscriptionProvider {
             return existingToken
         }
 
-        guard let tokenEndpointURL = URL(string: "\(workerBaseURL)/transcribe-token") else {
+        let normalizedWorkerBaseURL = WorkerURLNormalizer.normalize(workerBaseURL)
+        guard let tokenEndpointURL = URL(string: "\(normalizedWorkerBaseURL)/transcribe-token") else {
             throw TranscriptionError.invalidURL
         }
 
@@ -172,44 +159,43 @@ final class AssemblyAIProvider: TranscriptionProvider {
         return token
     }
 
-    // MARK: - Message Receiving
+    private func openWebSocket(at websocketURL: URL) async throws {
+        try await withCheckedThrowingContinuation { continuation in
+            let task = AssemblyAIProvider.sharedURLSession.webSocketTask(with: websocketURL)
 
-    /// Starts a recursive receive loop that processes messages until the socket closes.
-    ///
-    /// The recursion is intentional: URLSessionWebSocketTask.receive delivers one
-    /// message at a time, so we re-schedule ourselves after each successful receive.
-    /// When `isRunning` is false or the task errors, the recursion stops naturally.
+            stateQueue.sync {
+                webSocketTask = task
+                isSocketReady = false
+                self.readyContinuation = continuation
+            }
+
+            task.resume()
+            receiveMessages()
+        }
+    }
+
     private func receiveMessages() {
-        guard let task = webSocketTask else { return }
+        let task: URLSessionWebSocketTask? = stateQueue.sync { webSocketTask }
+        guard let task else { return }
 
         task.receive { [weak self] result in
-            guard let self = self else { return }
+            guard let self else { return }
 
-            Task { @MainActor in
-                switch result {
-                case .success(let message):
-                    self.handleReceivedMessage(message)
-                    // Schedule the next receive only if we're still active.
-                    if self.isRunning {
-                        self.receiveMessages()
-                    }
+            switch result {
+            case .success(let message):
+                self.handleReceivedMessage(message)
 
-                case .failure(let error):
-                    // If we intentionally stopped, the socket close is expected —
-                    // don't surface it as an error to the caller.
-                    guard self.isRunning else { return }
-                    self.isRunning = false
-                    self.onError?(error)
+                let shouldContinueReceiving = self.stateQueue.sync { self.isRunning }
+                if shouldContinueReceiving {
+                    self.receiveMessages()
                 }
+
+            case .failure(let error):
+                self.failSocket(with: error)
             }
         }
     }
 
-    /// Parses an incoming WebSocket message and fires `onText` for completed turns.
-    ///
-    /// AssemblyAI v3 sends JSON objects with a `type` field. We care about two:
-    /// - `"turn"` with `end_of_turn: true` — a speaker finished a thought
-    /// - `"error"` — the service encountered a problem
     private func handleReceivedMessage(_ message: URLSessionWebSocketTask.Message) {
         let jsonString: String
 
@@ -225,41 +211,115 @@ final class AssemblyAIProvider: TranscriptionProvider {
 
         guard let jsonData = jsonString.data(using: .utf8),
               let jsonObject = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
-              let messageType = jsonObject["type"] as? String else {
+              let rawMessageType = jsonObject["type"] as? String else {
             return
         }
 
+        let messageType = rawMessageType.lowercased()
+
         switch messageType {
+        case "begin", "session_begins", "sessionbegins":
+            stateQueue.sync {
+                isSocketReady = true
+                resolveReadyContinuationIfNeeded(with: .success(()))
+            }
+            print("[AssemblyAIProvider] WebSocket ready — audio streaming enabled")
+
+        case "speechstarted", "speech_started":
+            return
+
         case "turn":
-            // We only forward turns that are marked as complete. Partial turns
-            // update rapidly and would flood the transcript buffer unnecessarily.
-            guard let isEndOfTurn = jsonObject["end_of_turn"] as? Bool, isEndOfTurn else {
+            guard let transcript = jsonObject["transcript"] as? String else {
                 return
             }
 
-            if let transcript = jsonObject["transcript"] as? String, !transcript.isEmpty {
-                // The trailing space lets callers concatenate successive turns
-                // into a single string without adding their own separator.
-                onText?(transcript + " ")
+            let trimmedTranscript = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedTranscript.isEmpty else { return }
+
+            let isCompleteTurn = (jsonObject["end_of_turn"] as? Bool) == true
+            let turnOrder = jsonObject["turn_order"] as? Int
+
+            let transcriptUpdate = TranscriptionUpdate(
+                text: trimmedTranscript,
+                isFinal: isCompleteTurn,
+                turnOrder: turnOrder
+            )
+
+            let shouldDeliverUpdate = stateQueue.sync {
+                if let turnOrder {
+                    if lastDeliveredUpdateByTurnOrder[turnOrder] == transcriptUpdate {
+                        return false
+                    }
+
+                    lastDeliveredUpdateByTurnOrder[turnOrder] = transcriptUpdate
+
+                    if lastDeliveredUpdateByTurnOrder.count > 8 {
+                        let retainedTurnOrders = Set(lastDeliveredUpdateByTurnOrder.keys.sorted().suffix(4))
+                        lastDeliveredUpdateByTurnOrder = lastDeliveredUpdateByTurnOrder.filter {
+                            retainedTurnOrders.contains($0.key)
+                        }
+                    }
+                } else if lastDeliveredUnorderedUpdate == transcriptUpdate {
+                    return false
+                } else {
+                    lastDeliveredUnorderedUpdate = transcriptUpdate
+                }
+
+                return true
+            }
+
+            guard shouldDeliverUpdate else { return }
+
+            DispatchQueue.main.async { [onUpdate] in
+                onUpdate?(transcriptUpdate)
             }
 
         case "error":
-            let errorMessage = jsonObject["message"] as? String ?? "Unknown AssemblyAI error"
-            isRunning = false
-            onError?(TranscriptionError.serverError(errorMessage))
+            let errorMessage = (jsonObject["error"] as? String)
+                ?? (jsonObject["message"] as? String)
+                ?? "Unknown AssemblyAI error"
+            failSocket(with: TranscriptionError.serverError(errorMessage))
+
+        case "termination":
+            stateQueue.sync {
+                isRunning = false
+                isSocketReady = false
+                resolveReadyContinuationIfNeeded(with: .success(()))
+            }
 
         default:
-            // The first message from AssemblyAI (typically "session_begins") confirms
-            // the websocket is ready. Unblock feedAudio() by setting the ready flag.
-            if !isSocketReady {
-                isSocketReady = true
-                print("[AssemblyAIProvider] WebSocket ready — audio streaming enabled")
-            }
+            return
         }
     }
-}
 
-// MARK: - Errors
+    private func failSocket(with error: Error) {
+        let notificationHandler: ((Error) -> Void)? = stateQueue.sync {
+            guard isRunning else { return nil }
+
+            isRunning = false
+            isSocketReady = false
+            lastDeliveredUpdateByTurnOrder.removeAll()
+            lastDeliveredUnorderedUpdate = nil
+            let activeTask = webSocketTask
+            webSocketTask = nil
+            resolveReadyContinuationIfNeeded(with: .failure(error))
+            activeTask?.cancel(with: .goingAway, reason: nil)
+            return onError
+        }
+
+        guard let notificationHandler else { return }
+
+        DispatchQueue.main.async {
+            notificationHandler(error)
+        }
+    }
+
+    private func resolveReadyContinuationIfNeeded(with result: Result<Void, Error>) {
+        guard let readyContinuation else { return }
+        self.readyContinuation = nil
+        readyContinuation.resume(with: result)
+    }
+}
 
 enum TranscriptionError: Error, LocalizedError {
 

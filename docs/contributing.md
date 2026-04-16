@@ -97,7 +97,7 @@ Use descriptive branch names:
 | ----------------------------------- | ------------------------------------------------------------------------------------------------------ |
 | Edit persona personalities or rules | `PersonaPrompts.swift`                                                                                 |
 | Add a new persona                   | See [docs/personas.md](personas.md)                                                                    |
-| Change the sidebar look and feel    | `sidebar/styles.css`, `sidebar/index.html`                                                             |
+| Change the sidebar look and feel    | `Greenroom/Greenroom/Greenroom/sidebar/styles.css`, `Greenroom/Greenroom/Greenroom/sidebar/index.html` |
 | Fix audio capture issues            | `SystemAudioCaptureEngine.swift` or `MicrophoneCaptureEngine.swift`                                    |
 | Change the AI tick behavior         | `GreenroomEngine.swift`                                                                                |
 | Add a new Worker route              | `worker/src/index.ts`                                                                                  |

@@ -14,9 +14,18 @@ final class SystemAudioCaptureEngine: NSObject {
 
     private var captureStream: SCStream?
     private var audioStreamOutput: GreenroomAudioStreamOutput?
+    private var screenStreamOutput: GreenroomScreenStreamOutput?
+    private let audioSampleQueue = DispatchQueue(
+        label: "com.greenroom.systemaudio.capture",
+        qos: .userInteractive
+    )
+    private let screenSampleQueue = DispatchQueue(
+        label: "com.greenroom.systemaudio.screen-drain",
+        qos: .utility
+    )
 
-    /// Called on the main actor with each audio sample as it arrives from the stream.
-    var onAudioBuffer: ((CMSampleBuffer) -> Void)?
+    /// Called with each chunk of normalized PCM16 audio data from the system stream.
+    var onAudioData: ((Data) -> Void)?
 
     /// Called when the capture stream stops unexpectedly — e.g. the user revokes
     /// Screen Recording permission while a session is already running.
@@ -25,11 +34,14 @@ final class SystemAudioCaptureEngine: NSObject {
     // MARK: - Start
 
     /// Discovers the primary display, configures an audio-only capture stream at
-    /// 16 kHz mono PCM, and begins delivering sample buffers to `onAudioBuffer`.
+    /// 16 kHz mono PCM, and begins delivering sample buffers to `onAudioData`.
     ///
     /// Throws `AudioCaptureError.noDisplayFound` if ScreenCaptureKit cannot enumerate
     /// any displays, which is extremely rare but possible in headless or VM environments.
     func start() async throws {
+        let audioDataHandler = onAudioData
+        let pcm16AudioConverter = PCM16AudioConverter(targetSampleRate: 16_000)
+
         let shareableContent = try await SCShareableContent.excludingDesktopWindows(
             false,
             onScreenWindowsOnly: false
@@ -47,6 +59,20 @@ final class SystemAudioCaptureEngine: NSObject {
         streamConfiguration.sampleRate = 16000
         streamConfiguration.channelCount = 1
 
+        // Display-bound SCStream instances still produce screen frames even when we're
+        // only interested in system audio. Keep that video side tiny and low-frequency,
+        // then attach a no-op screen output so ScreenCaptureKit stops spamming dropped
+        // frame errors and wasting work on a full-resolution 60 fps stream.
+        streamConfiguration.width = 16
+        streamConfiguration.height = 16
+        streamConfiguration.minimumFrameInterval = CMTime(seconds: 0.5, preferredTimescale: 600)
+        streamConfiguration.queueDepth = 1
+        streamConfiguration.showsCursor = false
+
+        if #available(macOS 15.0, *) {
+            streamConfiguration.captureMicrophone = false
+        }
+
         // Exclude this process's own audio output so Greenroom's sound effects
         // (e.g. Fred's reaction sounds) don't feed back into the transcription pipeline.
         streamConfiguration.excludesCurrentProcessAudio = true
@@ -54,16 +80,31 @@ final class SystemAudioCaptureEngine: NSObject {
         let contentFilter = SCContentFilter(display: primaryDisplay, excludingWindows: [])
 
         let audioOutput = GreenroomAudioStreamOutput()
-        audioOutput.onAudioSample = { [weak self] sampleBuffer in
-            self?.onAudioBuffer?(sampleBuffer)
+        audioOutput.onAudioSample = { sampleBuffer in
+            guard let pcmData = AudioFormatConverter.convertCMSampleBufferToPCM16Data(
+                sampleBuffer: sampleBuffer,
+                converter: pcm16AudioConverter
+            ) else {
+                return
+            }
+
+            audioDataHandler?(pcmData)
         }
         self.audioStreamOutput = audioOutput
+
+        let screenOutput = GreenroomScreenStreamOutput()
+        self.screenStreamOutput = screenOutput
 
         let stream = SCStream(filter: contentFilter, configuration: streamConfiguration, delegate: self)
         try stream.addStreamOutput(
             audioOutput,
             type: .audio,
-            sampleHandlerQueue: DispatchQueue.global(qos: .userInteractive)
+            sampleHandlerQueue: audioSampleQueue
+        )
+        try stream.addStreamOutput(
+            screenOutput,
+            type: .screen,
+            sampleHandlerQueue: screenSampleQueue
         )
 
         try await stream.startCapture()
@@ -77,6 +118,7 @@ final class SystemAudioCaptureEngine: NSObject {
         try? await captureStream?.stopCapture()
         captureStream = nil
         audioStreamOutput = nil
+        screenStreamOutput = nil
     }
 }
 
@@ -114,6 +156,19 @@ private final class GreenroomAudioStreamOutput: NSObject, SCStreamOutput {
         // We only registered for audio, but guard here as a belt-and-suspenders check.
         guard outputType == .audio else { return }
         onAudioSample?(sampleBuffer)
+    }
+}
+
+/// Drains SCStream's required screen output so the framework doesn't log repeated
+/// dropped-frame errors while we're using the stream purely for system audio.
+private final class GreenroomScreenStreamOutput: NSObject, SCStreamOutput {
+
+    func stream(
+        _ stream: SCStream,
+        didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
+        of outputType: SCStreamOutputType
+    ) {
+        guard outputType == .screen else { return }
     }
 }
 

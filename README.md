@@ -2,7 +2,7 @@
 
 > AI production staff for your live show.
 
-Greenroom is a native macOS sidebar that watches your podcast, stream, or live show in real time and reacts through four AI personas — a fact-checker, a sound engineer, a comedy writer, and a resident troll. It captures system audio and your microphone, transcribes speech via AssemblyAI, sends transcript chunks to Claude every 15 seconds, and displays structured responses in a dark, broadcast-style sidebar. One persona plays actual sound effects. Another can verify claims with live web search.
+Greenroom is a native macOS sidebar that watches your podcast, stream, or live show in real time and reacts through four AI personas — a fact-checker, a sound engineer, a comedy writer, and a resident troll. It captures system audio and your microphone, transcribes speech via AssemblyAI, sends transcript chunks to Claude every 15 seconds, and displays structured responses in a dark, broadcast-style sidebar. A dedicated transcript viewer highlights the exact lines each persona reacted to so the product stays legible and trustworthy while the conversation is moving.
 
 BYOK (Bring Your Own Keys) — you deploy a tiny Cloudflare Worker with your own API keys. No keys ship in the app. No backend to trust.
 
@@ -47,7 +47,7 @@ Every persona response includes a "trigger quote" — the exact snippet of conve
 
 **Think** — Every ~15 seconds, the engine sends new transcript text (plus recent context) to Claude with a single structured prompt. Claude decides which personas have something worth saying and returns JSON.
 
-**React** — Persona responses appear in the sidebar with slide-up animations. Fred's sound effects play immediately. Gary's fact-checks can trigger a follow-up Exa web search for sourced verification.
+**React** — Persona responses appear in the sidebar with slide-up animations. Fred's sound effects play immediately. Gary's fact-checks can trigger a follow-up Exa web search for sourced verification. The transcript viewer keeps a rolling context log and marks the lines each persona latched onto.
 
 ## Quick Start
 
@@ -134,7 +134,7 @@ All settings are accessible from the gear icon in the sidebar.
 | Setting            | Default           | Description                                         |
 | ------------------ | ----------------- | --------------------------------------------------- |
 | **Worker URL**     | —                 | Your deployed Cloudflare Worker URL                 |
-| **Model**          | Claude Sonnet 4.6 | Claude model for persona responses (Sonnet or Opus) |
+| **Model**          | Claude Sonnet 4   | Claude model for persona responses (Sonnet or Opus) |
 | **Tick Interval**  | 15s               | How often the AI processes new transcript (5–60s)   |
 | **Context Window** | 2 min             | How far back the AI can see for context (1–5 min)   |
 | **SFX Muted**      | Off               | Mute Fred's sound effects                           |
@@ -186,7 +186,7 @@ open Greenroom/Greenroom/Greenroom.xcodeproj
 
 - Do NOT run `xcodebuild` from the terminal — it invalidates TCC permissions
 - The Xcode project has a triple-nested structure: `Greenroom/Greenroom/Greenroom/` contains the Swift source
-- Sidebar UI is vanilla HTML/CSS/JS at `sidebar/` (also copied to `Greenroom/Greenroom/Greenroom/sidebar/` for the Xcode bundle)
+- Sidebar UI lives at `Greenroom/Greenroom/Greenroom/sidebar/` as the single source of truth for both bundle builds and Xcode debug runs
 - All text rendering in the sidebar uses `textContent` — never `innerHTML`
 - Swift code style: optimize for clarity over concision, `@MainActor` for UI, async/await
 
