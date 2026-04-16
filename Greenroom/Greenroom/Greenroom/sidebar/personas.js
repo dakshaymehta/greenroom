@@ -56,6 +56,14 @@ var Personas = (function () {
     var bubble = document.createElement("div");
     bubble.classList.add("message-bubble");
 
+    // Add trigger quote if present — shows what moment triggered this response
+    if (data.trigger) {
+      var triggerQuote = document.createElement("div");
+      triggerQuote.classList.add("trigger-quote");
+      triggerQuote.textContent = 're: "' + data.trigger + '"';
+      bubble.appendChild(triggerQuote);
+    }
+
     // Fred with sound effect
     if (persona === "fred" && data.effect) {
       var sfxIndicator = document.createElement("span");
@@ -69,17 +77,17 @@ var Personas = (function () {
         bubble.appendChild(contextNode);
       }
     } else if (data.text) {
-      // Gary with optional confidence display
+      // Append text as a text node so it doesn't overwrite the trigger quote
+      var messageText = data.text;
       if (
         persona === "gary" &&
         showConfidence &&
         typeof data.confidence === "number"
       ) {
         var confidencePercent = Math.round(data.confidence * 100);
-        bubble.textContent = data.text + " (" + confidencePercent + "%)";
-      } else {
-        bubble.textContent = data.text;
+        messageText = data.text + " (" + confidencePercent + "%)";
       }
+      bubble.appendChild(document.createTextNode(messageText));
     }
 
     container.appendChild(bubble);
@@ -192,6 +200,14 @@ var Personas = (function () {
         bubble.classList.add("old");
       }
 
+      // Add trigger quote if present
+      if (data.trigger) {
+        var triggerQuote = document.createElement("div");
+        triggerQuote.classList.add("trigger-quote");
+        triggerQuote.textContent = 're: "' + data.trigger + '"';
+        bubble.appendChild(triggerQuote);
+      }
+
       if (persona === "fred" && data.effect) {
         var sfxIndicator = document.createElement("span");
         sfxIndicator.classList.add("sfx-indicator");
@@ -204,16 +220,17 @@ var Personas = (function () {
           bubble.appendChild(contextNode);
         }
       } else if (data.text) {
+        // Append text as a text node so it doesn't overwrite the trigger quote
+        var messageText = data.text;
         if (
           persona === "gary" &&
           showConfidence &&
           typeof data.confidence === "number"
         ) {
           var confidencePercent = Math.round(data.confidence * 100);
-          bubble.textContent = data.text + " (" + confidencePercent + "%)";
-        } else {
-          bubble.textContent = data.text;
+          messageText = data.text + " (" + confidencePercent + "%)";
         }
+        bubble.appendChild(document.createTextNode(messageText));
       }
 
       // Skip animation for rebuilt history items
