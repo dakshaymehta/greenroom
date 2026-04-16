@@ -22,6 +22,9 @@ BYOK (Bring Your Own Keys) — you deploy a tiny Cloudflare Worker with your own
 
 Every persona response includes a "trigger quote" — the exact snippet of conversation that prompted the reaction.
 
+example: <img width="4604" height="2160" alt="image" src="https://github.com/user-attachments/assets/7bdaba6a-06c2-499b-a12a-6268f9a5a24e" />
+
+
 ## How It Works
 
 ```
