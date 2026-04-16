@@ -72,6 +72,16 @@ final class TranscriptContextStore: ObservableObject {
         liveDraft = nil
     }
 
+    /// Wipes every line, highlight, focus, and live draft.
+    ///
+    /// Called on listening teardown so the sidebar doesn't continue displaying
+    /// transcript content from a session the user has stopped.
+    func clearAll() {
+        lines = []
+        focusedSegmentID = nil
+        liveDraft = nil
+    }
+
     func transcriptPreviewText(maximumCommittedLines: Int = 2) -> String {
         var previewComponents = lines.suffix(maximumCommittedLines).map(\.text)
 

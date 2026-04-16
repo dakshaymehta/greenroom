@@ -159,6 +159,16 @@ final class TranscriptBuffer {
         return Array(segments.suffix(limit))
     }
 
+    /// Discards every buffered segment and resets the tick boundary.
+    ///
+    /// Called on listening teardown so a fresh session never carries forward
+    /// speech from the previous one — both for conversational hygiene and so
+    /// that prior transcripts don't linger in memory after the user stops.
+    func clearAll() {
+        segments.removeAll()
+        lastTickBoundaryIndex = 0
+    }
+
     /// Removes segments that have exceeded `maxStorageDurationSeconds` and adjusts the boundary.
     ///
     /// We remove from the front of the array and shift the boundary index down accordingly.

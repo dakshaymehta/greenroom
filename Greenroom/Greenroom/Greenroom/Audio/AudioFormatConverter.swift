@@ -7,7 +7,7 @@ final class PCM16AudioConverter {
 
     private let targetAudioFormat: AVAudioFormat
     private var audioConverter: AVAudioConverter?
-    private var currentInputFormatDescription: String?
+    private var cachedInputFormat: AVAudioFormat?
 
     init(targetSampleRate: Double = 16_000) {
         self.targetAudioFormat = AVAudioFormat(
@@ -19,11 +19,13 @@ final class PCM16AudioConverter {
     }
 
     func convertToPCM16Data(from audioBuffer: AVAudioPCMBuffer) -> Data? {
-        let inputFormatDescription = audioBuffer.format.settings.description
-
-        if currentInputFormatDescription != inputFormatDescription {
+        // Reuse the existing converter whenever the input format's shape hasn't
+        // actually changed. Comparing on the concrete format properties avoids
+        // allocating a fresh `settings.description` string on every audio buffer,
+        // which at ~20-50 Hz of mic callbacks was measurable overhead.
+        if !matchesCachedInputFormat(audioBuffer.format) {
             audioConverter = AVAudioConverter(from: audioBuffer.format, to: targetAudioFormat)
-            currentInputFormatDescription = inputFormatDescription
+            cachedInputFormat = audioBuffer.format
         }
 
         guard let audioConverter else { return nil }
@@ -62,6 +64,14 @@ final class PCM16AudioConverter {
         guard byteCount > 0 else { return nil }
 
         return Data(bytes: dataPointer, count: byteCount)
+    }
+
+    private func matchesCachedInputFormat(_ incomingFormat: AVAudioFormat) -> Bool {
+        guard let cachedInputFormat else { return false }
+        return cachedInputFormat.sampleRate == incomingFormat.sampleRate
+            && cachedInputFormat.channelCount == incomingFormat.channelCount
+            && cachedInputFormat.commonFormat == incomingFormat.commonFormat
+            && cachedInputFormat.isInterleaved == incomingFormat.isInterleaved
     }
 }
 

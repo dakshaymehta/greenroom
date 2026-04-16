@@ -281,10 +281,18 @@ final class AssemblyAIProvider: TranscriptionProvider, @unchecked Sendable {
             failSocket(with: TranscriptionError.serverError(errorMessage))
 
         case "termination":
-            stateQueue.sync {
-                isRunning = false
-                isSocketReady = false
-                resolveReadyContinuationIfNeeded(with: .success(()))
+            // If the server terminates the session while we still expect audio to
+            // flow, treat it as an error so the coordinator's recovery logic fires.
+            // A termination that arrives after a client-initiated stop() is benign —
+            // isRunning will already be false and we just resolve any pending state.
+            let wasRunningWhenTerminated = stateQueue.sync { isRunning }
+            if wasRunningWhenTerminated {
+                failSocket(with: TranscriptionError.serverError("Session terminated by server"))
+            } else {
+                stateQueue.sync {
+                    isSocketReady = false
+                    resolveReadyContinuationIfNeeded(with: .success(()))
+                }
             }
 
         default:
@@ -293,8 +301,18 @@ final class AssemblyAIProvider: TranscriptionProvider, @unchecked Sendable {
     }
 
     private func failSocket(with error: Error) {
+        let isAuthFailure = Self.looksLikeAuthenticationFailure(error)
+
         let notificationHandler: ((Error) -> Void)? = stateQueue.sync {
             guard isRunning else { return nil }
+
+            // A stale or rejected token will keep failing every retry if we don't
+            // invalidate the cache here. Clear it so the next `start()` forces a
+            // fresh token fetch from the Worker.
+            if isAuthFailure {
+                cachedToken = nil
+                tokenFetchedAt = nil
+            }
 
             isRunning = false
             isSocketReady = false
@@ -312,6 +330,27 @@ final class AssemblyAIProvider: TranscriptionProvider, @unchecked Sendable {
         DispatchQueue.main.async {
             notificationHandler(error)
         }
+    }
+
+    private static func looksLikeAuthenticationFailure(_ error: Error) -> Bool {
+        if case TranscriptionError.serverError(let message) = error {
+            let loweredMessage = message.lowercased()
+            if loweredMessage.contains("token")
+                || loweredMessage.contains("auth")
+                || loweredMessage.contains("unauthorized")
+                || loweredMessage.contains("forbidden") {
+                return true
+            }
+        }
+
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain,
+           nsError.code == NSURLErrorUserAuthenticationRequired
+            || nsError.code == NSURLErrorUserCancelledAuthentication {
+            return true
+        }
+
+        return false
     }
 
     private func resolveReadyContinuationIfNeeded(with result: Result<Void, Error>) {

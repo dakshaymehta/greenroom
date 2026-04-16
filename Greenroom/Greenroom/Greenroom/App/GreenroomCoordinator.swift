@@ -109,6 +109,10 @@ final class GreenroomCoordinator {
     }
 
     /// Tears down every subsystem in reverse order of startup.
+    ///
+    /// Transcript state is purged at the end so a stopped session doesn't keep
+    /// the user's speech resident in memory, and so a subsequent `startListening`
+    /// begins from a clean slate without replaying prior context to the AI.
     func stopListening() async {
         isListening = false
         activeWorkerBaseURL = nil
@@ -117,6 +121,7 @@ final class GreenroomCoordinator {
         audioMixer.reset()
         await systemAudioCaptureEngine.stop()
         microphoneCaptureEngine.stop()
+        engine.clearAllTranscriptState()
     }
 
     /// Re-applies persisted settings that affect the live pipeline without

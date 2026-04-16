@@ -148,6 +148,17 @@ final class GreenroomEngine {
         refreshTranscriptPreview()
     }
 
+    /// Discards every piece of session state that carries transcript text:
+    /// the rolling buffer, the sidebar context store, and the conversation
+    /// history sent alongside each AI request. Used when the user stops
+    /// listening so prior speech doesn't persist in memory past the session.
+    func clearAllTranscriptState() {
+        transcriptBuffer.clearAll()
+        transcriptContextStore.clearAll()
+        conversationHistory.removeAll()
+        refreshTranscriptPreview()
+    }
+
     func refreshTimingConfiguration() {
         guard tickTimer != nil else { return }
         start()

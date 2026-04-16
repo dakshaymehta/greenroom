@@ -31,8 +31,8 @@ final class AudioMixer {
     /// Reused zero-filled frame for silent / missing input.
     private let silenceFrame: Data
 
-    private var systemAudioBuffer = Data()
-    private var microphoneAudioBuffer = Data()
+    private var systemAudioBuffer = PCMFrameByteBuffer()
+    private var microphoneAudioBuffer = PCMFrameByteBuffer()
     private var emittedFrameCount = 0
 
     /// Called with each chunk of mixed audio data, ready to be sent to the transcription provider.
@@ -70,8 +70,8 @@ final class AudioMixer {
     /// silence rather than replaying leftover partial frames.
     func reset() {
         mixQueue.async { [weak self] in
-            self?.systemAudioBuffer.removeAll(keepingCapacity: true)
-            self?.microphoneAudioBuffer.removeAll(keepingCapacity: true)
+            self?.systemAudioBuffer.removeAll()
+            self?.microphoneAudioBuffer.removeAll()
             self?.emittedFrameCount = 0
         }
     }
@@ -108,9 +108,9 @@ final class AudioMixer {
 
             switch audioSource {
             case .system:
-                self.systemAudioBuffer.append(pcmAlignedData)
+                self.systemAudioBuffer.appendBytes(pcmAlignedData)
             case .microphone:
-                self.microphoneAudioBuffer.append(pcmAlignedData)
+                self.microphoneAudioBuffer.appendBytes(pcmAlignedData)
             }
 
             self.emitMixedFramesIfPossible()
@@ -136,19 +136,16 @@ final class AudioMixer {
         }
     }
 
-    private func dequeueNextFrame(from buffer: inout Data) -> SourceFrame {
+    private func dequeueNextFrame(from buffer: inout PCMFrameByteBuffer) -> SourceFrame {
         guard !buffer.isEmpty else {
             return SourceFrame(audioData: silenceFrame, contributingByteCount: 0)
         }
 
-        if buffer.count >= outputFrameByteCount {
-            let frameData = Data(buffer.prefix(outputFrameByteCount))
-            buffer.removeFirst(outputFrameByteCount)
+        if let frameData = buffer.takeFrame(byteCount: outputFrameByteCount) {
             return SourceFrame(audioData: frameData, contributingByteCount: outputFrameByteCount)
         }
 
-        let partialFrame = buffer
-        buffer.removeAll(keepingCapacity: true)
+        let partialFrame = buffer.drainRemaining()
 
         var paddedFrame = partialFrame
         paddedFrame.append(Data(repeating: 0, count: outputFrameByteCount - partialFrame.count))
@@ -190,5 +187,77 @@ final class AudioMixer {
     private func clippedPCM16Sample(from mixedSample: Int) -> Int16 {
         let clampedSample = min(Int(Int16.max), max(Int(Int16.min), mixedSample))
         return Int16(clampedSample)
+    }
+}
+
+// MARK: - PCMFrameByteBuffer
+
+/// A byte buffer optimized for the mixer's producer/consumer pattern: append
+/// incoming PCM chunks, drain out fixed-size frames.
+///
+/// Uses a read cursor rather than `Data.removeFirst` to avoid shifting the
+/// underlying storage on every frame extraction. Storage is compacted only when
+/// the cursor crosses a threshold, so the amortized cost of taking a frame is
+/// constant instead of linear in the buffer's length.
+private struct PCMFrameByteBuffer {
+
+    /// Beyond this many already-consumed bytes, compact to keep storage bounded.
+    ///
+    /// Chosen to be large enough that compaction happens rarely (every few
+    /// hundred frames at 100 ms each) while small enough that the compacted
+    /// memcpy stays cheap.
+    private static let compactionThresholdBytes = 64 * 1024
+
+    private var storage = Data()
+    private var readCursor: Int = 0
+
+    var count: Int {
+        storage.count - readCursor
+    }
+
+    var isEmpty: Bool {
+        count == 0
+    }
+
+    mutating func appendBytes(_ incomingData: Data) {
+        if readCursor >= Self.compactionThresholdBytes {
+            storage.removeFirst(readCursor)
+            readCursor = 0
+        }
+
+        storage.append(incomingData)
+    }
+
+    /// Returns a full frame of `byteCount` bytes, or nil if not enough data is
+    /// buffered yet. Advances the read cursor only when a full frame is returned.
+    mutating func takeFrame(byteCount: Int) -> Data? {
+        guard count >= byteCount else { return nil }
+
+        let frameRange = readCursor..<(readCursor + byteCount)
+        let frameData = storage.subdata(in: frameRange)
+        readCursor += byteCount
+
+        if readCursor >= storage.count {
+            storage.removeAll(keepingCapacity: true)
+            readCursor = 0
+        }
+
+        return frameData
+    }
+
+    /// Removes and returns whatever bytes are still buffered. Used when the
+    /// caller needs to emit a partial frame and zero-pad the rest.
+    mutating func drainRemaining() -> Data {
+        guard !isEmpty else { return Data() }
+
+        let remainingData = storage.subdata(in: readCursor..<storage.count)
+        storage.removeAll(keepingCapacity: true)
+        readCursor = 0
+        return remainingData
+    }
+
+    mutating func removeAll() {
+        storage.removeAll(keepingCapacity: true)
+        readCursor = 0
     }
 }
