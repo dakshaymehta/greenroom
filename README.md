@@ -2,11 +2,11 @@
 
 > AI production staff for your live show.
 
+<video src="https://github.com/dakshaymehta/greenroom/releases/download/v0.1.0/greenroom-demo.mp4" width="100%" autoplay loop muted playsinline></video>
+
 Greenroom is a native macOS sidebar that watches your podcast, stream, or live show in real time and reacts through four AI personas — a fact-checker, a sound engineer, a comedy writer, and a resident troll. It captures system audio and your microphone, transcribes speech via AssemblyAI, sends transcript chunks to Claude every 15 seconds, and displays structured responses in a dark, broadcast-style sidebar. A dedicated transcript viewer highlights the exact lines each persona reacted to so the product stays legible and trustworthy while the conversation is moving.
 
 BYOK (Bring Your Own Keys) — you deploy a tiny Cloudflare Worker with your own API keys. No keys ship in the app. No backend to trust.
-
-<!-- TODO: Add screenshot -->
 
 ## The Production Staff
 
@@ -131,15 +131,15 @@ chmod +x scripts/setup.sh
 
 All settings are accessible from the gear icon in the sidebar.
 
-| Setting            | Default           | Description                                         |
-| ------------------ | ----------------- | --------------------------------------------------- |
-| **Worker URL**     | —                 | Your deployed Cloudflare Worker URL                 |
-| **Model**          | Claude Sonnet 4   | Claude model for persona responses (Sonnet or Opus) |
-| **Tick Interval**  | 15s               | How often the AI processes new transcript (5–60s)   |
-| **Context Window** | 2 min             | How far back the AI can see for context (1–5 min)   |
-| **SFX Muted**      | Off               | Mute Fred's sound effects                           |
-| **SFX Volume**     | 70%               | Volume for Fred's sound effects                     |
-| **Float on Top**   | On                | Keep the sidebar above other windows                |
+| Setting            | Default         | Description                                         |
+| ------------------ | --------------- | --------------------------------------------------- |
+| **Worker URL**     | —               | Your deployed Cloudflare Worker URL                 |
+| **Model**          | Claude Sonnet 4 | Claude model for persona responses (Sonnet or Opus) |
+| **Tick Interval**  | 15s             | How often the AI processes new transcript (5–60s)   |
+| **Context Window** | 2 min           | How far back the AI can see for context (1–5 min)   |
+| **SFX Muted**      | Off             | Mute Fred's sound effects                           |
+| **SFX Volume**     | 70%             | Volume for Fred's sound effects                     |
+| **Float on Top**   | On              | Keep the sidebar above other windows                |
 
 ## Architecture
 
