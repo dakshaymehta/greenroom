@@ -4,6 +4,9 @@
 
 <video src="https://github.com/dakshaymehta/greenroom/releases/download/v0.1.0/greenroom-demo.mp4" width="100%" autoplay loop muted playsinline></video>
 
+<img width="4604" height="2160" alt="image" src="https://github.com/user-attachments/assets/6e681349-5d0a-4a1b-9322-352096823c55" />
+
+
 Greenroom is a native macOS sidebar that watches your podcast, stream, or live show in real time and reacts through four AI personas — a fact-checker, a sound engineer, a comedy writer, and a resident troll. It captures system audio and your microphone, transcribes speech via AssemblyAI, sends transcript chunks to Claude every 15 seconds, and displays structured responses in a dark, broadcast-style sidebar. A dedicated transcript viewer highlights the exact lines each persona reacted to so the product stays legible and trustworthy while the conversation is moving.
 
 BYOK (Bring Your Own Keys) — you deploy a tiny Cloudflare Worker with your own API keys. No keys ship in the app. No backend to trust.
