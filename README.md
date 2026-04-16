@@ -160,6 +160,36 @@ Persona prompts live in `PersonaPrompts.swift`. You can edit personalities, add 
 
 See [docs/contributing.md](docs/contributing.md) for development setup, code style, and PR guidelines.
 
+## For AI Agents
+
+If you're an AI coding agent (Claude Code, Cursor, Copilot, Gemini CLI, etc.) pointed at this repo, read `AGENTS.md` (or its symlink `CLAUDE.md`) for architecture, build instructions, and code style.
+
+**To get the app running from scratch:**
+
+```bash
+# 1. Deploy the Cloudflare Worker (needs API keys as interactive input)
+cd worker && npm install
+npx wrangler login
+npx wrangler secret put ANTHROPIC_API_KEY
+npx wrangler secret put ASSEMBLYAI_API_KEY
+npx wrangler deploy
+# Note the printed URL
+
+# 2. Build the app (do NOT use xcodebuild — open in Xcode)
+open Greenroom/Greenroom/Greenroom.xcodeproj
+# Set signing team, Cmd+R to build and run
+
+# 3. Configure: paste Worker URL in Settings (gear icon), grant permissions
+```
+
+**Key constraints for agents:**
+
+- Do NOT run `xcodebuild` from the terminal — it invalidates TCC permissions
+- The Xcode project has a triple-nested structure: `Greenroom/Greenroom/Greenroom/` contains the Swift source
+- Sidebar UI is vanilla HTML/CSS/JS at `sidebar/` (also copied to `Greenroom/Greenroom/Greenroom/sidebar/` for the Xcode bundle)
+- All text rendering in the sidebar uses `textContent` — never `innerHTML`
+- Swift code style: optimize for clarity over concision, `@MainActor` for UI, async/await
+
 ## License
 
 MIT — Dakshay Mehta

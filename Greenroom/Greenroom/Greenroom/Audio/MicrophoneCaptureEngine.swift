@@ -24,38 +24,66 @@ final class MicrophoneCaptureEngine {
 
     /// Installs a tap on the microphone input and starts the audio engine.
     ///
-    /// We request a 16 kHz mono Float32 format from the tap, then convert each
-    /// buffer to PCM s16le before forwarding it. AVAudioEngine's built-in format
-    /// conversion handles any necessary resampling from the hardware's native rate.
+    /// AVAudioEngine cannot resample arbitrarily in a tap — the tap format must
+    /// match the input node's output format. We capture at the hardware's native
+    /// rate and use an AVAudioConverter to downsample to 16 kHz mono for AssemblyAI.
     ///
     /// Throws if the engine cannot be prepared — most commonly because no input
     /// device is available (e.g. the user is on a Mac Pro with no microphone).
     func start() throws {
         let inputNode = audioEngine.inputNode
 
-        // We target 16 kHz mono Float32 non-interleaved. AVAudioEngine will resample
-        // from the hardware's native sample rate (typically 44.1 or 48 kHz) to 16 kHz
-        // automatically when the tap format differs from the hardware format.
+        // Use the input node's native format for the tap — AVAudioEngine requires this.
+        // Requesting a different sample rate (e.g. 16kHz when hardware runs at 24kHz)
+        // causes "Format mismatch" + "Failed to create tap" errors.
+        let hardwareFormat = inputNode.outputFormat(forBus: 0)
+        print("[MicrophoneCaptureEngine] Hardware format: \(hardwareFormat)")
+
+        // Build our target format: 16 kHz mono Float32 for AssemblyAI.
         guard let targetFormat = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
             sampleRate: 16000,
             channels: 1,
             interleaved: false
         ) else {
-            // This should never fail for standard PCM formats, but we throw to
-            // surface the failure rather than silently capturing nothing.
             throw MicrophoneCaptureError.formatCreationFailed
         }
 
-        inputNode.installTap(onBus: 0, bufferSize: 4096, format: targetFormat) { [weak self] buffer, _ in
-            guard let self = self else { return }
+        // Create a converter from hardware format → 16 kHz mono.
+        guard let audioConverter = AVAudioConverter(from: hardwareFormat, to: targetFormat) else {
+            throw MicrophoneCaptureError.converterCreationFailed
+        }
 
-            guard let pcmData = AudioFormatConverter.convertAVAudioPCMBufferToPCM16Data(pcmBuffer: buffer) else {
+        // Tap at the hardware's native format, then convert each buffer.
+        inputNode.installTap(onBus: 0, bufferSize: 4096, format: hardwareFormat) { [weak self] buffer, _ in
+            guard let self else { return }
+
+            // Allocate an output buffer at 16 kHz. The frame capacity is scaled down
+            // proportionally to the sample rate ratio.
+            let sampleRateRatio = 16000.0 / hardwareFormat.sampleRate
+            let outputFrameCount = AVAudioFrameCount(Double(buffer.frameLength) * sampleRateRatio)
+
+            guard let convertedBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: outputFrameCount) else {
                 return
             }
 
-            // The tap callback fires on an internal AVAudioEngine thread.
-            // Hop to the main actor so callers can safely update UI from onAudioData.
+            // Convert from hardware rate to 16 kHz.
+            var conversionError: NSError?
+            let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
+                outStatus.pointee = .haveData
+                return buffer
+            }
+            audioConverter.convert(to: convertedBuffer, error: &conversionError, withInputFrom: inputBlock)
+
+            if let conversionError {
+                print("[MicrophoneCaptureEngine] Conversion error: \(conversionError)")
+                return
+            }
+
+            guard let pcmData = AudioFormatConverter.convertAVAudioPCMBufferToPCM16Data(pcmBuffer: convertedBuffer) else {
+                return
+            }
+
             Task { @MainActor in
                 self.onAudioData?(pcmData)
             }
@@ -63,6 +91,7 @@ final class MicrophoneCaptureEngine {
 
         audioEngine.prepare()
         try audioEngine.start()
+        print("[MicrophoneCaptureEngine] Started — capturing at \(hardwareFormat.sampleRate) Hz, converting to 16 kHz")
     }
 
     // MARK: - Stop
@@ -79,8 +108,14 @@ final class MicrophoneCaptureEngine {
 private enum MicrophoneCaptureError: Error, LocalizedError {
 
     case formatCreationFailed
+    case converterCreationFailed
 
     var errorDescription: String? {
-        return "Failed to create the target audio format for microphone capture."
+        switch self {
+        case .formatCreationFailed:
+            return "Failed to create the target audio format for microphone capture."
+        case .converterCreationFailed:
+            return "Failed to create an audio converter from the hardware format to 16 kHz."
+        }
     }
 }

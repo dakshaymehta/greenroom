@@ -43,6 +43,10 @@ final class AssemblyAIProvider: TranscriptionProvider {
     /// Guards against feeding audio or starting a receive loop after `stop()` is called.
     private var isRunning = false
 
+    /// True once the websocket handshake completes and the server is ready.
+    /// Audio is silently dropped until this is true, preventing Code 57 errors.
+    private var isSocketReady = false
+
     // MARK: - TranscriptionProvider
 
     /// Fetches a token, opens the AssemblyAI WebSocket, and starts receiving transcription events.
@@ -83,9 +87,19 @@ final class AssemblyAIProvider: TranscriptionProvider {
 
         let task = AssemblyAIProvider.sharedURLSession.webSocketTask(with: websocketURL)
         self.webSocketTask = task
+        self.isSocketReady = false
         task.resume()
 
+        // Start the receive loop. The first message from AssemblyAI is a session
+        // confirmation — isSocketReady is set to true when we receive it, which
+        // unblocks feedAudio(). This prevents Code 57 errors from sending audio
+        // before the websocket handshake completes.
         receiveMessages()
+
+        // Give the websocket a moment to establish before returning.
+        // The coordinator starts audio capture immediately after this returns,
+        // so a brief delay here prevents the initial burst of Code 57 errors.
+        try await Task.sleep(for: .milliseconds(500))
     }
 
     /// Base64-encodes the audio bytes and sends them as a JSON message to AssemblyAI.
@@ -94,7 +108,7 @@ final class AssemblyAIProvider: TranscriptionProvider {
     /// We silently drop the frame if the socket isn't running — this can happen
     /// for a brief window between `stop()` being called and the audio tap being removed.
     func feedAudio(_ data: Data) {
-        guard isRunning, let task = webSocketTask else { return }
+        guard isRunning, isSocketReady, let task = webSocketTask else { return }
 
         let base64AudioString = data.base64EncodedString()
         let jsonPayload = "{\"audio\":\"\(base64AudioString)\"}"
@@ -235,9 +249,12 @@ final class AssemblyAIProvider: TranscriptionProvider {
             onError?(TranscriptionError.serverError(errorMessage))
 
         default:
-            // Unknown message types (e.g. "session_begins", "session_info") are
-            // informational and intentionally ignored.
-            break
+            // The first message from AssemblyAI (typically "session_begins") confirms
+            // the websocket is ready. Unblock feedAudio() by setting the ready flag.
+            if !isSocketReady {
+                isSocketReady = true
+                print("[AssemblyAIProvider] WebSocket ready — audio streaming enabled")
+            }
         }
     }
 }
